@@ -1,6 +1,7 @@
 """
-Sync Ticketsports -> Google Sheets
-Puxa inscrições da API Ticketsports e escreve no Google Sheets.
+Sync Ticketsports -> Google Sheets (multi-etapa)
+Puxa inscricoes da API Ticketsports para todas as etapas configuradas
+e escreve em abas raw separadas no Google Sheets.
 Roda via GitHub Actions (cron a cada hora) ou manualmente.
 """
 
@@ -19,8 +20,23 @@ from google.oauth2.service_account import Credentials
 
 API_BASE = "api.ticketsports.com.br"
 API_VERSION = "/v1.0"
-EVENT_ID = 86595
 PAGE_LIMIT = 50
+
+# Etapas Corrida Vai Bem. Adicionar nova etapa = nova entrada aqui.
+EVENTS = [
+    {
+        "id": 86595,
+        "label": "Brasília",
+        "raw_tab": "raw_inscritos_brasilia",
+        "dash_tab": "Brasília",
+    },
+    {
+        "id": 86781,
+        "label": "Belo Horizonte",
+        "raw_tab": "raw_inscritos_bh",
+        "dash_tab": "Belo Horizonte",
+    },
+]
 
 # Credenciais via variáveis de ambiente (GitHub Secrets) ou arquivo local
 TICKET_LOGIN = os.environ.get("TICKET_LOGIN", "marketing@brada.social")
@@ -93,8 +109,8 @@ def authenticate():
     return data["access_token"]
 
 
-def fetch_all_orders(token):
-    """Busca todos os pedidos pagos do evento, paginando."""
+def fetch_all_orders(token, event_id):
+    """Busca todos os pedidos pagos de um evento, paginando."""
     all_rows = []
     page = 1
     total_pages = 1
@@ -105,7 +121,7 @@ def fetch_all_orders(token):
             "GET",
             endpoint,
             headers={"Authorization": f"Bearer {token}"},
-            body={"events": [EVENT_ID], "status": ["Pago"]},
+            body={"events": [event_id], "status": ["Pago"]},
         )
 
         total_pages = data.get("totalpages", data.get("totalPages", 1))
@@ -144,10 +160,9 @@ def fetch_all_orders(token):
                     camiseta,
                 ])
 
-        print(f"Página {page}/{total_pages} ({len(orders)} pedidos)")
+        print(f"  Página {page}/{total_pages} ({len(orders)} pedidos)")
         page += 1
 
-    print(f"Total: {len(all_rows)} inscritos")
     return all_rows
 
 
@@ -163,11 +178,9 @@ def get_sheets_client():
     ]
 
     if SERVICE_ACCOUNT_JSON:
-        # GitHub Actions: JSON vem da variável de ambiente
         info = json.loads(SERVICE_ACCOUNT_JSON)
         creds = Credentials.from_service_account_info(info, scopes=scopes)
     elif os.path.exists(SERVICE_ACCOUNT_FILE):
-        # Local: JSON vem do arquivo
         creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
     else:
         raise Exception(
@@ -178,35 +191,43 @@ def get_sheets_client():
     return gspread.authorize(creds)
 
 
-def write_to_sheets(rows):
-    """Sobrescreve a aba raw_inscritos com os dados frescos."""
-    gc = get_sheets_client()
-
-    if SPREADSHEET_ID:
-        sh = gc.open_by_key(SPREADSHEET_ID)
-    else:
-        # Tenta abrir pelo nome
-        sh = gc.open("Dashboard Inscrições - Vai Bem")
-
-    # Selecionar ou criar aba raw_inscritos
+def migrate_legacy_tab(sh):
+    """Renomeia raw_inscritos -> raw_inscritos_brasilia (one-shot, idempotente)."""
     try:
-        ws = sh.worksheet("raw_inscritos")
+        legacy = sh.worksheet("raw_inscritos")
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="raw_inscritos", rows=1000, cols=len(HEADER))
+        return  # Já migrado
+    try:
+        sh.worksheet("raw_inscritos_brasilia")
+        # Destino já existe — apaga legacy pra evitar conflito
+        sh.del_worksheet(legacy)
+        print("Legacy raw_inscritos removido (raw_inscritos_brasilia ja existia).")
+    except gspread.exceptions.WorksheetNotFound:
+        legacy.update_title("raw_inscritos_brasilia")
+        print("Renomeado: raw_inscritos -> raw_inscritos_brasilia")
 
-    # Limpar e reescrever
+
+def write_raw_tab(sh, rows, raw_tab_name):
+    """Sobrescreve uma aba raw com os dados frescos."""
+    try:
+        ws = sh.worksheet(raw_tab_name)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=raw_tab_name, rows=max(1000, len(rows) + 10), cols=len(HEADER))
+
     ws.clear()
     ws.update(values=[HEADER] + rows, range_name="A1")
+    print(f"  -> {len(rows)} linhas em {raw_tab_name}")
 
-    # Atualizar timestamp na aba Brasília
-    try:
-        dash = sh.worksheet("Brasília")
-        now = datetime.now().strftime("%d/%m/%Y %H:%M")
-        dash.update(values=[[now]], range_name="C2")
-    except Exception as e:
-        print(f"Aviso: não conseguiu atualizar timestamp: {e}")
 
-    print(f"Sheets atualizado: {len(rows)} linhas em raw_inscritos")
+def update_timestamps(sh, dash_tabs):
+    """Escreve timestamp da ultima sync em cada aba dashboard (celula C2)."""
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    for tab in dash_tabs:
+        try:
+            ws = sh.worksheet(tab)
+            ws.update(values=[[now]], range_name="C2")
+        except Exception as e:
+            print(f"  Aviso: timestamp {tab}: {e}")
 
 
 # ===================================================
@@ -216,20 +237,27 @@ def write_to_sheets(rows):
 def main():
     print(f"=== Sync Ticketsports -> Sheets ({datetime.now()}) ===")
 
-    # 1. Autenticar
     token = authenticate()
+    gc = get_sheets_client()
 
-    # 2. Buscar dados
-    rows = fetch_all_orders(token)
+    if SPREADSHEET_ID:
+        sh = gc.open_by_key(SPREADSHEET_ID)
+    else:
+        sh = gc.open("Dashboard Inscrições - Vai Bem")
 
-    if not rows:
-        print("Nenhum registro encontrado. Abortando.")
-        return
+    migrate_legacy_tab(sh)
 
-    # 3. Escrever no Sheets
-    write_to_sheets(rows)
+    total_inscritos = 0
+    for ev in EVENTS:
+        print(f"\n[{ev['label']}] event_id={ev['id']}")
+        rows = fetch_all_orders(token, ev["id"])
+        print(f"  Total: {len(rows)} inscritos")
+        write_raw_tab(sh, rows, ev["raw_tab"])
+        total_inscritos += len(rows)
 
-    print("=== Concluído ===")
+    update_timestamps(sh, [ev["dash_tab"] for ev in EVENTS])
+
+    print(f"\n=== Concluído: {total_inscritos} inscritos em {len(EVENTS)} etapas ===")
 
 
 if __name__ == "__main__":
