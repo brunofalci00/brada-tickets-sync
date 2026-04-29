@@ -63,6 +63,8 @@ LL_API_TOKEN = os.environ.get("LL_API_TOKEN", "")
 LL_MACHINE_CODE = os.environ.get("LL_MACHINE_CODE", "")
 LL_SEQUENCE_CODE = os.environ.get("LL_SEQUENCE_CODE", "")
 
+# Planilha separada para logs do Leadlovers (nao misturar com dashboard)
+LL_SPREADSHEET_ID = "1aaDYxjcDhhR2lMLejpOW54QVNGQuSOXc8Gj6q5S2KdA"
 LL_SENT_TAB = "ll_enviados"
 LL_SENT_HEADER = ["inscricao", "email", "evento", "data_envio"]
 
@@ -259,31 +261,36 @@ def update_timestamps(sh, dash_tabs):
 # LEADLOVERS
 # ===================================================
 
-def get_sent_inscricoes(sh):
+def get_ll_sheet(gc):
+    """Abre a planilha separada de logs do Leadlovers."""
+    return gc.open_by_key(LL_SPREADSHEET_ID)
+
+
+def get_sent_inscricoes(ll_sh):
     """Retorna set de inscricao IDs já enviados ao Leadlovers."""
     try:
-        ws = sh.worksheet(LL_SENT_TAB)
+        ws = ll_sh.worksheet(LL_SENT_TAB)
         values = ws.col_values(1)  # coluna inscricao
         return set(str(v) for v in values[1:])  # pula header
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=LL_SENT_TAB, rows=5000, cols=4)
+        ws = ll_sh.add_worksheet(title=LL_SENT_TAB, rows=5000, cols=4)
         ws.update(values=[LL_SENT_HEADER], range_name="A1")
         return set()
 
 
-def mark_sent_inscricoes(sh, new_entries):
+def mark_sent_inscricoes(ll_sh, new_entries):
     """Appenda novas linhas na aba ll_enviados."""
-    ws = sh.worksheet(LL_SENT_TAB)
+    ws = ll_sh.worksheet(LL_SENT_TAB)
     ws.append_rows(new_entries)
 
 
-def push_to_leadlovers(sh, participants, event_label):
+def push_to_leadlovers(ll_sh, participants, event_label):
     """Envia novos inscritos (não enviados antes) ao Leadlovers."""
     if not LL_API_TOKEN:
         print("  [LL] LL_API_TOKEN não configurado — pulando sync Leadlovers.")
         return
 
-    sent = get_sent_inscricoes(sh)
+    sent = get_sent_inscricoes(ll_sh)
     new_participants = [p for p in participants if str(p["inscricao"]) not in sent]
     print(f"  [LL] {len(new_participants)} novos de {len(participants)} total")
 
@@ -332,7 +339,7 @@ def push_to_leadlovers(sh, participants, event_label):
             print(f"    ✗ {p['email']} — HTTP {resp.status}: {resp_body[:120]}")
 
     if successful:
-        mark_sent_inscricoes(sh, successful)
+        mark_sent_inscricoes(ll_sh, successful)
         print(f"  [LL] {len(successful)} leads enviados com sucesso.")
 
 
@@ -352,6 +359,7 @@ def main():
         sh = gc.open("Dashboard Inscrições - Vai Bem")
 
     migrate_legacy_tab(sh)
+    ll_sh = get_ll_sheet(gc)
 
     total_inscritos = 0
     for ev in EVENTS:
@@ -360,7 +368,7 @@ def main():
         print(f"  Total: {len(participants)} inscritos")
         rows = [to_sheet_row(p) for p in participants]
         write_raw_tab(sh, rows, ev["raw_tab"])
-        push_to_leadlovers(sh, participants, ev["label"])
+        push_to_leadlovers(ll_sh, participants, ev["label"])
         total_inscritos += len(participants)
 
     update_timestamps(sh, [ev["dash_tab"] for ev in EVENTS])
