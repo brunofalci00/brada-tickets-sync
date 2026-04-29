@@ -1,8 +1,9 @@
 """
-Sync Ticketsports -> Google Sheets (multi-etapa)
-Puxa inscricoes da API Ticketsports para todas as etapas configuradas
-e escreve em abas raw separadas no Google Sheets.
-Roda via GitHub Actions (cron a cada hora) ou manualmente.
+Sync Ticketsports -> Google Sheets + Leadlovers (multi-etapa)
+Puxa inscricoes da API Ticketsports para todas as etapas configuradas,
+escreve em abas raw separadas no Google Sheets, e envia novos inscritos
+ao Leadlovers para disparo da regua de email.
+Roda via GitHub Actions (cron a cada 5min) ou manualmente.
 """
 
 import http.client
@@ -15,7 +16,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ===================================================
-# CONFIG
+# CONFIG TICKETSPORTS
 # ===================================================
 
 API_BASE = "api.ticketsports.com.br"
@@ -52,6 +53,18 @@ HEADER = [
     "N inscricao", "Categoria", "Modalidade", "Sexo", "Status do pedido",
     "Cupom", "Valor", "Data Pedido", "Dispositivo", "Cidade", "Estado", "Camiseta",
 ]
+
+# ===================================================
+# CONFIG LEADLOVERS
+# ===================================================
+
+LL_API_BASE = "llapi.leadlovers.com"
+LL_API_TOKEN = os.environ.get("LL_API_TOKEN", "")
+LL_MACHINE_CODE = os.environ.get("LL_MACHINE_CODE", "")
+LL_SEQUENCE_CODE = os.environ.get("LL_SEQUENCE_CODE", "")
+
+LL_SENT_TAB = "ll_enviados"
+LL_SENT_HEADER = ["inscricao", "email", "evento", "data_envio"]
 
 
 # ===================================================
@@ -110,8 +123,8 @@ def authenticate():
 
 
 def fetch_all_orders(token, event_id):
-    """Busca todos os pedidos pagos de um evento, paginando."""
-    all_rows = []
+    """Busca todos os pedidos pagos de um evento, paginando. Retorna list[dict]."""
+    all_participants = []
     page = 1
     total_pages = 1
 
@@ -145,25 +158,37 @@ def fetch_all_orders(token, event_id):
                 if isinstance(valor, str):
                     valor = valor.replace(",", ".")
 
-                all_rows.append([
-                    p.get("inscricao", ""),
-                    p.get("categoria", ""),
-                    p.get("modalidade", ""),
-                    p.get("sexo", ""),
-                    order.get("status", ""),
-                    p.get("tituloCupom", ""),
-                    valor,
-                    order.get("dataPedido", ""),
-                    order.get("tipoDispositivo", ""),
-                    cidade,
-                    estado,
-                    camiseta,
-                ])
+                all_participants.append({
+                    "inscricao": p.get("inscricao", ""),
+                    "nome": p.get("nome", ""),
+                    "email": p.get("email", ""),
+                    "celular": p.get("celular", ""),
+                    "categoria": p.get("categoria", ""),
+                    "modalidade": p.get("modalidade", ""),
+                    "sexo": p.get("sexo", ""),
+                    "status": order.get("status", ""),
+                    "cupom": p.get("tituloCupom", ""),
+                    "valor": valor,
+                    "dataPedido": order.get("dataPedido", ""),
+                    "dispositivo": order.get("tipoDispositivo", ""),
+                    "cidade": cidade,
+                    "estado": estado,
+                    "camiseta": camiseta,
+                })
 
         print(f"  Página {page}/{total_pages} ({len(orders)} pedidos)")
         page += 1
 
-    return all_rows
+    return all_participants
+
+
+def to_sheet_row(p):
+    """Converte dict de participante para lista de 12 colunas do Sheet."""
+    return [
+        p["inscricao"], p["categoria"], p["modalidade"], p["sexo"],
+        p["status"], p["cupom"], p["valor"], p["dataPedido"],
+        p["dispositivo"], p["cidade"], p["estado"], p["camiseta"],
+    ]
 
 
 # ===================================================
@@ -231,11 +256,92 @@ def update_timestamps(sh, dash_tabs):
 
 
 # ===================================================
+# LEADLOVERS
+# ===================================================
+
+def get_sent_inscricoes(sh):
+    """Retorna set de inscricao IDs já enviados ao Leadlovers."""
+    try:
+        ws = sh.worksheet(LL_SENT_TAB)
+        values = ws.col_values(1)  # coluna inscricao
+        return set(str(v) for v in values[1:])  # pula header
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=LL_SENT_TAB, rows=5000, cols=4)
+        ws.update(values=[LL_SENT_HEADER], range_name="A1")
+        return set()
+
+
+def mark_sent_inscricoes(sh, new_entries):
+    """Appenda novas linhas na aba ll_enviados."""
+    ws = sh.worksheet(LL_SENT_TAB)
+    ws.append_rows(new_entries)
+
+
+def push_to_leadlovers(sh, participants, event_label):
+    """Envia novos inscritos (não enviados antes) ao Leadlovers."""
+    if not LL_API_TOKEN:
+        print("  [LL] LL_API_TOKEN não configurado — pulando sync Leadlovers.")
+        return
+
+    sent = get_sent_inscricoes(sh)
+    new_participants = [p for p in participants if str(p["inscricao"]) not in sent]
+    print(f"  [LL] {len(new_participants)} novos de {len(participants)} total")
+
+    if not new_participants:
+        return
+
+    ctx = ssl.create_default_context()
+    successful = []
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    for p in new_participants:
+        if not p.get("email"):
+            print(f"    - inscricao {p['inscricao']} sem email, pulando")
+            continue
+
+        payload = {
+            "Email": p["email"],
+            "Name": p["nome"],
+            "MachineCode": int(LL_MACHINE_CODE),
+            "EmailSequenceCode": int(LL_SEQUENCE_CODE),
+            "SequenceLevelCode": "1",
+            "PhoneNumber": p["celular"],
+            "City": p["cidade"],
+            "State": p["estado"],
+        }
+        body_str = json.dumps(payload)
+        conn = http.client.HTTPSConnection(LL_API_BASE, context=ctx)
+        conn.request(
+            "POST",
+            f"/webapi/lead?Token={LL_API_TOKEN}",
+            body=body_str,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Content-Length": str(len(body_str.encode("utf-8"))),
+            },
+        )
+        resp = conn.getresponse()
+        resp_body = resp.read().decode("utf-8")
+        conn.close()
+
+        if resp.status in (200, 201):
+            successful.append([str(p["inscricao"]), p["email"], event_label, now])
+            print(f"    ✓ {p['email']}")
+        else:
+            print(f"    ✗ {p['email']} — HTTP {resp.status}: {resp_body[:120]}")
+
+    if successful:
+        mark_sent_inscricoes(sh, successful)
+        print(f"  [LL] {len(successful)} leads enviados com sucesso.")
+
+
+# ===================================================
 # MAIN
 # ===================================================
 
 def main():
-    print(f"=== Sync Ticketsports -> Sheets ({datetime.now()}) ===")
+    print(f"=== Sync Ticketsports -> Sheets + Leadlovers ({datetime.now()}) ===")
 
     token = authenticate()
     gc = get_sheets_client()
@@ -250,10 +356,12 @@ def main():
     total_inscritos = 0
     for ev in EVENTS:
         print(f"\n[{ev['label']}] event_id={ev['id']}")
-        rows = fetch_all_orders(token, ev["id"])
-        print(f"  Total: {len(rows)} inscritos")
+        participants = fetch_all_orders(token, ev["id"])
+        print(f"  Total: {len(participants)} inscritos")
+        rows = [to_sheet_row(p) for p in participants]
         write_raw_tab(sh, rows, ev["raw_tab"])
-        total_inscritos += len(rows)
+        push_to_leadlovers(sh, participants, ev["label"])
+        total_inscritos += len(participants)
 
     update_timestamps(sh, [ev["dash_tab"] for ev in EVENTS])
 
