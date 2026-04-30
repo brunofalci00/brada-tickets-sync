@@ -30,13 +30,16 @@ EVENTS = [
         "label": "Brasília",
         "raw_tab": "raw_inscritos_brasilia",
         "dash_tab": "Brasília",
+        "ll_sequence_env": "LL_SEQUENCE_BSB",
     },
     {
         "id": 86781,
         "label": "Belo Horizonte",
         "raw_tab": "raw_inscritos_bh",
         "dash_tab": "Belo Horizonte",
+        "ll_sequence_env": "LL_SEQUENCE_BH",
     },
+    # Salvador: adicionar quando abrir inscricoes (env: LL_SEQUENCE_SSA)
 ]
 
 # Credenciais via variáveis de ambiente (GitHub Secrets) ou arquivo local
@@ -61,7 +64,8 @@ HEADER = [
 LL_API_BASE = "llapi.leadlovers.com"
 LL_API_TOKEN = os.environ.get("LL_API_TOKEN", "")
 LL_MACHINE_CODE = os.environ.get("LL_MACHINE_CODE", "")
-LL_SEQUENCE_CODE = os.environ.get("LL_SEQUENCE_CODE", "")
+# Sequence code e por etapa: cada cidade tem grupo de WhatsApp diferente,
+# entao precisa de sequencia propria. Lido via os.environ[ev["ll_sequence_env"]].
 
 # Planilha separada para logs do Leadlovers (nao misturar com dashboard)
 LL_SPREADSHEET_ID = "1aaDYxjcDhhR2lMLejpOW54QVNGQuSOXc8Gj6q5S2KdA"
@@ -284,10 +288,21 @@ def mark_sent_inscricoes(ll_sh, new_entries):
     ws.append_rows(new_entries)
 
 
-def push_to_leadlovers(ll_sh, participants, event_label):
-    """Envia novos inscritos (não enviados antes) ao Leadlovers."""
+def push_to_leadlovers(ll_sh, participants, event):
+    """Envia novos inscritos (não enviados antes) ao Leadlovers.
+
+    Cada etapa usa sua propria sequencia (link de WhatsApp diferente por cidade).
+    """
+    event_label = event["label"]
+
     if not LL_API_TOKEN:
         print("  [LL] LL_API_TOKEN não configurado — pulando sync Leadlovers.")
+        return
+
+    sequence_env = event["ll_sequence_env"]
+    sequence_code = os.environ.get(sequence_env, "")
+    if not sequence_code:
+        print(f"  [LL] {sequence_env} não configurado — pulando {event_label}.")
         return
 
     sent = get_sent_inscricoes(ll_sh)
@@ -310,7 +325,7 @@ def push_to_leadlovers(ll_sh, participants, event_label):
             "Email": p["email"],
             "Name": p["nome"],
             "MachineCode": int(LL_MACHINE_CODE),
-            "EmailSequenceCode": int(LL_SEQUENCE_CODE),
+            "EmailSequenceCode": int(sequence_code),
             "SequenceLevelCode": "1",
             "PhoneNumber": p["celular"],
             "City": p["cidade"],
@@ -368,7 +383,7 @@ def main():
         print(f"  Total: {len(participants)} inscritos")
         rows = [to_sheet_row(p) for p in participants]
         write_raw_tab(sh, rows, ev["raw_tab"])
-        push_to_leadlovers(ll_sh, participants, ev["label"])
+        push_to_leadlovers(ll_sh, participants, ev)
         total_inscritos += len(participants)
 
     update_timestamps(sh, [ev["dash_tab"] for ev in EVENTS])
