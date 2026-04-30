@@ -31,6 +31,7 @@ EVENTS = [
         "raw_tab": "raw_inscritos_brasilia",
         "dash_tab": "Brasília",
         "ll_sequence_env": "LL_SEQUENCE_BSB",
+        "ll_sent_tab": "Etapa Brasilia",
     },
     {
         "id": 86781,
@@ -38,8 +39,10 @@ EVENTS = [
         "raw_tab": "raw_inscritos_bh",
         "dash_tab": "Belo Horizonte",
         "ll_sequence_env": "LL_SEQUENCE_BH",
+        "ll_sent_tab": "Etapa BH",
     },
-    # Salvador: adicionar quando abrir inscricoes (env: LL_SEQUENCE_SSA)
+    # Salvador: adicionar quando abrir inscricoes
+    # (env: LL_SEQUENCE_SSA, ll_sent_tab: "Etapa Salvador")
 ]
 
 # Credenciais via variáveis de ambiente (GitHub Secrets) ou arquivo local
@@ -67,10 +70,10 @@ LL_MACHINE_CODE = os.environ.get("LL_MACHINE_CODE", "")
 # Sequence code e por etapa: cada cidade tem grupo de WhatsApp diferente,
 # entao precisa de sequencia propria. Lido via os.environ[ev["ll_sequence_env"]].
 
-# Planilha separada para logs do Leadlovers (nao misturar com dashboard)
+# Planilha separada para logs do Leadlovers (nao misturar com dashboard).
+# Cada etapa tem aba propria — nome em EVENTS[i]["ll_sent_tab"].
 LL_SPREADSHEET_ID = "1aaDYxjcDhhR2lMLejpOW54QVNGQuSOXc8Gj6q5S2KdA"
-LL_SENT_TAB = "ll_enviados"
-LL_SENT_HEADER = ["inscricao", "email", "evento", "data_envio"]
+LL_SENT_HEADER = ["inscricao", "email", "nome", "data_envio"]
 
 
 # ===================================================
@@ -270,21 +273,26 @@ def get_ll_sheet(gc):
     return gc.open_by_key(LL_SPREADSHEET_ID)
 
 
-def get_sent_inscricoes(ll_sh):
-    """Retorna set de inscricao IDs já enviados ao Leadlovers."""
+def get_sent_inscricoes(ll_sh, tab_name):
+    """Retorna set de inscricao IDs já enviados ao Leadlovers para a etapa.
+
+    Garante que a aba existe e tem header. Idempotente.
+    """
     try:
-        ws = ll_sh.worksheet(LL_SENT_TAB)
-        values = ws.col_values(1)  # coluna inscricao
-        return set(str(v) for v in values[1:])  # pula header
+        ws = ll_sh.worksheet(tab_name)
     except gspread.exceptions.WorksheetNotFound:
-        ws = ll_sh.add_worksheet(title=LL_SENT_TAB, rows=5000, cols=4)
+        ws = ll_sh.add_worksheet(title=tab_name, rows=5000, cols=len(LL_SENT_HEADER))
+
+    values = ws.col_values(1)  # coluna inscricao
+    if not values:
         ws.update(values=[LL_SENT_HEADER], range_name="A1")
         return set()
+    return set(str(v) for v in values[1:])  # pula header
 
 
-def mark_sent_inscricoes(ll_sh, new_entries):
-    """Appenda novas linhas na aba ll_enviados."""
-    ws = ll_sh.worksheet(LL_SENT_TAB)
+def mark_sent_inscricoes(ll_sh, tab_name, new_entries):
+    """Appenda novas linhas na aba da etapa."""
+    ws = ll_sh.worksheet(tab_name)
     ws.append_rows(new_entries)
 
 
@@ -305,7 +313,8 @@ def push_to_leadlovers(ll_sh, participants, event):
         print(f"  [LL] {sequence_env} não configurado — pulando {event_label}.")
         return
 
-    sent = get_sent_inscricoes(ll_sh)
+    sent_tab = event["ll_sent_tab"]
+    sent = get_sent_inscricoes(ll_sh, sent_tab)
     new_participants = [p for p in participants if str(p["inscricao"]) not in sent]
     print(f"  [LL] {len(new_participants)} novos de {len(participants)} total")
 
@@ -348,13 +357,13 @@ def push_to_leadlovers(ll_sh, participants, event):
         conn.close()
 
         if resp.status in (200, 201):
-            successful.append([str(p["inscricao"]), p["email"], event_label, now])
+            successful.append([str(p["inscricao"]), p["email"], p["nome"], now])
             print(f"    ✓ {p['email']}")
         else:
             print(f"    ✗ {p['email']} — HTTP {resp.status}: {resp_body[:120]}")
 
     if successful:
-        mark_sent_inscricoes(ll_sh, successful)
+        mark_sent_inscricoes(ll_sh, sent_tab, successful)
         print(f"  [LL] {len(successful)} leads enviados com sucesso.")
 
 
