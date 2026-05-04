@@ -24,5 +24,10 @@ jobs:
           TICKET_PASSWORD: ${{ secrets.TICKET_PASSWORD }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          # Leadlovers: NAO incluir aqui. Usar leadlovers_dispatch.yml para disparo manual.
+          LL_API_TOKEN: ${{ secrets.LL_API_TOKEN }}
+          LL_MACHINE_CODE: ${{ secrets.LL_MACHINE_CODE }}
+          LL_SEQUENCE_BSB: ${{ secrets.LL_SEQUENCE_BSB }}
+          # Descomentar cada linha conforme Gui ativar o e-mail da etapa:
+          # LL_SEQUENCE_BH: ${{ secrets.LL_SEQUENCE_BH }}    # quando e-mail BH publicado
+          # LL_SEQUENCE_SSA: ${{ secrets.LL_SEQUENCE_SSA }}  # quando Salvador abrir + e-mail publicado
         run: python sync.py
