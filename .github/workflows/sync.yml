@@ -27,7 +27,7 @@ jobs:
           LL_API_TOKEN: ${{ secrets.LL_API_TOKEN }}
           LL_MACHINE_CODE: ${{ secrets.LL_MACHINE_CODE }}
           LL_SEQUENCE_BSB: ${{ secrets.LL_SEQUENCE_BSB }}
-          # Descomentar cada linha conforme Gui ativar o e-mail da etapa:
-          # LL_SEQUENCE_BH: ${{ secrets.LL_SEQUENCE_BH }}    # quando e-mail BH publicado
+          LL_SEQUENCE_BH: ${{ secrets.LL_SEQUENCE_BH }}
+          # Descomentar quando Gui ativar o e-mail da etapa:
           # LL_SEQUENCE_SSA: ${{ secrets.LL_SEQUENCE_SSA }}  # quando Salvador abrir + e-mail publicado
         run: python sync.py
