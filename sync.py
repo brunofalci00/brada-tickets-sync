@@ -106,6 +106,8 @@ def api_request(method, endpoint, headers=None, body=None):
     data = resp.read().decode("utf-8")
     conn.close()
 
+    if resp.status == 204:
+        return {}
     if resp.status != 200:
         raise Exception(f"HTTP {resp.status} em {endpoint}: {data[:300]}")
 
