@@ -28,6 +28,5 @@ jobs:
           LL_MACHINE_CODE: ${{ secrets.LL_MACHINE_CODE }}
           LL_SEQUENCE_BSB: ${{ secrets.LL_SEQUENCE_BSB }}
           LL_SEQUENCE_BH: ${{ secrets.LL_SEQUENCE_BH }}
-          # Descomentar quando Gui ativar o e-mail da etapa:
-          # LL_SEQUENCE_SSA: ${{ secrets.LL_SEQUENCE_SSA }}  # quando Salvador abrir + e-mail publicado
+          LL_SEQUENCE_SSA: ${{ secrets.LL_SEQUENCE_SSA }}
         run: python sync.py

@@ -41,8 +41,14 @@ EVENTS = [
         "ll_sequence_env": "LL_SEQUENCE_BH",
         "ll_sent_tab": "Etapa BH",
     },
-    # Salvador: adicionar quando abrir inscricoes
-    # (env: LL_SEQUENCE_SSA, ll_sent_tab: "Etapa Salvador")
+    {
+        "id": 87008,
+        "label": "Salvador",
+        "raw_tab": "raw_inscritos_ssa",
+        "dash_tab": "Salvador",
+        "ll_sequence_env": "LL_SEQUENCE_SSA",
+        "ll_sent_tab": "Etapa Salvador",
+    },
 ]
 
 # Credenciais via variáveis de ambiente (GitHub Secrets) ou arquivo local
