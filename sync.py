@@ -64,6 +64,7 @@ SERVICE_ACCOUNT_FILE = os.environ.get(
 HEADER = [
     "N inscricao", "Categoria", "Modalidade", "Sexo", "Status do pedido",
     "Cupom", "Valor", "Data Pedido", "Dispositivo", "Cidade", "Estado", "Camiseta",
+    "Inscricao Grupo", "Nome Grupo",
 ]
 
 # ===================================================
@@ -191,6 +192,8 @@ def fetch_all_orders(token, event_id):
                     "cidade": cidade,
                     "estado": estado,
                     "camiseta": camiseta,
+                    "inscricao_grupo": "Sim" if p.get("inscricao_grupo") else "Não",
+                    "nome_grupo": p.get("nome_grupo", "") or "",
                 })
 
         print(f"  Página {page}/{total_pages} ({len(orders)} pedidos)")
@@ -200,11 +203,12 @@ def fetch_all_orders(token, event_id):
 
 
 def to_sheet_row(p):
-    """Converte dict de participante para lista de 12 colunas do Sheet."""
+    """Converte dict de participante para lista de 14 colunas do Sheet."""
     return [
         p["inscricao"], p["categoria"], p["modalidade"], p["sexo"],
         p["status"], p["cupom"], p["valor"], p["dataPedido"],
         p["dispositivo"], p["cidade"], p["estado"], p["camiseta"],
+        p["inscricao_grupo"], p["nome_grupo"],
     ]
 
 
