@@ -3,13 +3,14 @@ Sync Ticketsports -> Google Sheets + Leadlovers (multi-etapa)
 Puxa inscricoes da API Ticketsports para todas as etapas configuradas,
 escreve em abas raw separadas no Google Sheets, e envia novos inscritos
 ao Leadlovers para disparo da regua de email.
-Roda via GitHub Actions (cron a cada 5min) ou manualmente.
+Roda via GitHub Actions (cron horario) ou manualmente.
 """
 
 import http.client
 import json
 import os
 import ssl
+import time
 from datetime import datetime
 
 import gspread
@@ -84,60 +85,79 @@ LL_SENT_HEADER = ["inscricao", "email", "nome", "data_envio"]
 
 
 # ===================================================
+# RETRY
+# ===================================================
+
+def _retry(fn, label, max_tries=3, initial_wait=15):
+    """Executa fn, retentando ate max_tries vezes com backoff em caso de falha."""
+    wait = initial_wait
+    for attempt in range(1, max_tries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == max_tries:
+                raise
+            print(f"  [{label}] tentativa {attempt}/{max_tries} falhou: {e}. Aguardando {wait}s...")
+            time.sleep(wait)
+            wait *= 2
+
+
+# ===================================================
 # API TICKETSPORTS
 # ===================================================
 
 def api_request(method, endpoint, headers=None, body=None):
     """Faz request HTTP para a API Ticketsports. Suporta GET com body."""
-    ctx = ssl.create_default_context()
-    conn = http.client.HTTPSConnection(API_BASE, context=ctx)
+    def _do():
+        ctx = ssl.create_default_context()
+        conn = http.client.HTTPSConnection(API_BASE, context=ctx)
+        body_str = json.dumps(body) if body else None
+        all_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if headers:
+            all_headers.update(headers)
+        if body_str:
+            all_headers["Content-Length"] = str(len(body_str.encode("utf-8")))
+        conn.request(method, API_VERSION + endpoint, body=body_str, headers=all_headers)
+        resp = conn.getresponse()
+        data = resp.read().decode("utf-8")
+        conn.close()
+        if resp.status == 204:
+            return {}
+        if resp.status != 200:
+            raise Exception(f"HTTP {resp.status} em {endpoint}: {data[:300]}")
+        return json.loads(data)
 
-    body_str = json.dumps(body) if body else None
-    all_headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    if headers:
-        all_headers.update(headers)
-    if body_str:
-        all_headers["Content-Length"] = str(len(body_str.encode("utf-8")))
-
-    conn.request(method, API_VERSION + endpoint, body=body_str, headers=all_headers)
-    resp = conn.getresponse()
-    data = resp.read().decode("utf-8")
-    conn.close()
-
-    if resp.status == 204:
-        return {}
-    if resp.status != 200:
-        raise Exception(f"HTTP {resp.status} em {endpoint}: {data[:300]}")
-
-    return json.loads(data)
+    return _retry(_do, endpoint.split("?")[0])
 
 
 def authenticate():
     """Autentica na API e retorna o Bearer token."""
-    body = f"Login={TICKET_LOGIN}&Password={TICKET_PASSWORD}&AccessType=O"
-    ctx = ssl.create_default_context()
-    conn = http.client.HTTPSConnection(API_BASE, context=ctx)
-    conn.request(
-        "POST",
-        API_VERSION + "/Access",
-        body=body,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-        },
-    )
-    resp = conn.getresponse()
-    data = json.loads(resp.read().decode("utf-8"))
-    conn.close()
+    def _do():
+        body = f"Login={TICKET_LOGIN}&Password={TICKET_PASSWORD}&AccessType=O"
+        ctx = ssl.create_default_context()
+        conn = http.client.HTTPSConnection(API_BASE, context=ctx)
+        conn.request(
+            "POST",
+            API_VERSION + "/Access",
+            body=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+        if not data.get("access_token"):
+            raise Exception(f"Falha na autenticação: {data}")
+        return data["access_token"]
 
-    if not data.get("access_token"):
-        raise Exception(f"Falha na autenticação: {data}")
-
-    print(f"Autenticado com sucesso.")
-    return data["access_token"]
+    token = _retry(_do, "auth")
+    print("Autenticado com sucesso.")
+    return token
 
 
 def fetch_all_orders(token, event_id):
@@ -261,7 +281,7 @@ def write_raw_tab(sh, rows, raw_tab_name):
         ws = sh.add_worksheet(title=raw_tab_name, rows=max(1000, len(rows) + 10), cols=len(HEADER))
 
     ws.clear()
-    ws.update(values=[HEADER] + rows, range_name="A1")
+    _retry(lambda: ws.update(values=[HEADER] + rows, range_name="A1"), f"write {raw_tab_name}")
     print(f"  -> {len(rows)} linhas em {raw_tab_name}")
 
 
@@ -305,7 +325,7 @@ def get_sent_inscricoes(ll_sh, tab_name):
 def mark_sent_inscricoes(ll_sh, tab_name, new_entries):
     """Appenda novas linhas na aba da etapa."""
     ws = ll_sh.worksheet(tab_name)
-    ws.append_rows(new_entries)
+    _retry(lambda: ws.append_rows(new_entries), f"log LL {tab_name}")
 
 
 def push_to_leadlovers(ll_sh, participants, event):
