@@ -59,7 +59,7 @@ SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "")
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 SERVICE_ACCOUNT_FILE = os.environ.get(
     "GOOGLE_SERVICE_ACCOUNT_FILE",
-    os.path.join(os.path.dirname(__file__), "..", "service-account-key.json"),
+    r"C:\Users\bruno\.brada-secrets\sheets-sa.json",
 )
 
 HEADER = [
@@ -124,8 +124,8 @@ def api_request(method, endpoint, headers=None, body=None):
         resp = conn.getresponse()
         data = resp.read().decode("utf-8")
         conn.close()
-        if resp.status == 204:
-            return {}
+        if resp.status == 204 or not data.strip():
+            return {}  # sem conteudo (204 ou body vazio — ex: Cortesia com 0 resultados)
         if resp.status != 200:
             raise Exception(f"HTTP {resp.status} em {endpoint}: {data[:300]}")
         return json.loads(data)
@@ -172,7 +172,7 @@ def fetch_all_orders(token, event_id):
             "GET",
             endpoint,
             headers={"Authorization": f"Bearer {token}"},
-            body={"events": [event_id], "status": ["Pago"]},
+            body={"events": [event_id], "status": ["Pago", "Cortesia"]},
         )
 
         total_pages = data.get("totalpages", data.get("totalPages", 1))
