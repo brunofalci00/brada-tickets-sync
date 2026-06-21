@@ -12,7 +12,7 @@ import json
 import os
 import ssl
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -106,13 +106,13 @@ METAS_TABS = {
 
 # Colunas de detalhamento por tier que a automacao controla nas abas Pagas:
 # (header na planilha, chave no dict de contagem).
+# `Realizado` (E) ja e o total pago, entao NAO ha coluna "Real. Total Pago" (era duplicata).
 META_TIER_COLS = [
     ("Real. Básico", "Básico"),
     ("Real. Premium", "Premium"),
     ("Real. Combo", "Combo"),
     ("Real. PCD", "PCD"),
     ("Real. Gratuito", "Gratuito"),
-    ("Real. Total Pago", "Total Pago"),
 ]
 
 
@@ -497,6 +497,17 @@ def parse_inicio(texto, year=CAMPAIGN_YEAR):
         return None
 
 
+def _today_brt():
+    """Data de 'hoje' em horario de Brasilia (UTC-3). O runner do GitHub Actions roda em UTC."""
+    return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-3))).date()
+
+
+def _semana_futura(periodo_txt, hoje):
+    """True se a semana ainda nao comecou (data de INICIO do periodo 'DD/MM - DD/MM' > hoje)."""
+    inicio = parse_inicio(_norm_dash(periodo_txt).split("-")[0].strip())
+    return inicio is not None and inicio > hoje
+
+
 def is_free(p):
     """Gratis: valor 0 OU status Cortesia (cobre perna gratis de combo e cortesias)."""
     return parse_valor(p.get("valor")) < 0.01 or (p.get("status") or "") == "Cortesia"
@@ -608,8 +619,12 @@ def _ensure_cols(ws, names):
     return hmap
 
 
-def write_metas_pagas_xlsx(ws, participants, label):
-    """Escreve Realizado(=Total Pago), Gap e colunas Real.* por semana. So toca essas celulas."""
+def write_metas_pagas_xlsx(ws, participants, label, hoje=None):
+    """Escreve Realizado(=Total Pago), Gap e colunas Real.* por semana. So toca essas celulas.
+
+    Semanas cujo inicio > hoje (BRT) ficam em branco (preenchem quando a semana chega).
+    """
+    hoje = hoje or _today_brt()
     hmap = _header_map_xlsx(ws)
     col_semana = hmap.get(_norm_header("Semana"))
     col_periodo = hmap.get(_norm_header("Período"))
@@ -640,6 +655,19 @@ def write_metas_pagas_xlsx(ws, participants, label):
         if periodo_txt in seen:
             print(f"  [METAS] {label} {semana}: Periodo duplicado '{periodo_txt}' (= {seen[periodo_txt]}) — revisar datas")
         seen[periodo_txt] = semana
+        if _semana_futura(periodo_txt, hoje):
+            # semana ainda nao comecou: limpar (None = branco real, p/ CF e grafico ignorarem)
+            ws.cell(r, col_real).value = None
+            if col_gap:
+                ws.cell(r, col_gap).value = None
+            for _name, _key in META_TIER_COLS:
+                ci = tier_idx.get(_name)
+                if ci:
+                    ws.cell(r, ci).value = None
+            if METAS_DRY_RUN:
+                print(f"  [METAS DRY] {label} {semana}: FUTURA ({periodo_txt}) -> branco")
+            n += 1
+            continue
         counts = tier_counts_cumulative(participants, fim)
         ignorados = max(ignorados, counts["_ignorados"])
         ws.cell(r, col_real).value = counts["Total Pago"]

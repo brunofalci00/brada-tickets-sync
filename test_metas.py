@@ -88,6 +88,15 @@ chk("toint_milhar", sync._to_int("1.200"), 1200)
 chk("toint_num", sync._to_int(510), 510)
 chk("toint_vazio", sync._to_int(""), None)
 
+# --- _semana_futura (fill-as-time) ---
+HOJE = date(2026, 6, 21)
+chk("futura_sim", sync._semana_futura("25/06 - 02/07", HOJE), True)     # inicio 25/06 > 21/06
+chk("futura_borda", sync._semana_futura("21/06 - 28/06", HOJE), False)  # comeca hoje -> mostra
+chk("futura_atual", sync._semana_futura("18/06 - 25/06", HOJE), False)  # semana corrente
+chk("futura_passada", sync._semana_futura("14/05 - 21/05", HOJE), False)
+chk("futura_endash", sync._semana_futura("25/06 – 02/07", HOJE), True)  # en-dash
+chk("futura_lixo", sync._semana_futura("xxx", HOJE), False)             # nao-parseavel -> nao esconde
+
 print()
 if _fail:
     print(f"=== {_fail} FALHAS ===")
