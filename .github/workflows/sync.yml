@@ -31,4 +31,5 @@ jobs:
           LL_SEQUENCE_BSB: ${{ secrets.LL_SEQUENCE_BSB }}
           LL_SEQUENCE_BH: ${{ secrets.LL_SEQUENCE_BH }}
           LL_SEQUENCE_SSA: ${{ secrets.LL_SEQUENCE_SSA }}
+          METAS_SPREADSHEET_ID: ${{ secrets.METAS_SPREADSHEET_ID }}
         run: python sync.py

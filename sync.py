@@ -7,11 +7,12 @@ Roda via GitHub Actions (cron horario) ou manualmente.
 """
 
 import http.client
+import io
 import json
 import os
 import ssl
 import time
-from datetime import datetime
+from datetime import datetime, date
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -82,6 +83,37 @@ LL_MACHINE_CODE = os.environ.get("LL_MACHINE_CODE", "")
 # Cada etapa tem aba propria — nome em EVENTS[i]["ll_sent_tab"].
 LL_SPREADSHEET_ID = "1aaDYxjcDhhR2lMLejpOW54QVNGQuSOXc8Gj6q5S2KdA"
 LL_SENT_HEADER = ["inscricao", "email", "nome", "data_envio"]
+
+
+# ===================================================
+# CONFIG METAS (planilha semanal da Tamyris — meta_corrida_vai_bem)
+# ===================================================
+
+# ID da planilha NATIVA (44 chars). Setar no GitHub Secrets apos converter o XLSX
+# para Sheet nativa e compartilhar com a service account.
+# ID do arquivo .xlsx no Drive (mesmo link que o time usa). Gravacao in-place via Drive API.
+METAS_SPREADSHEET_ID = os.environ.get("METAS_SPREADSHEET_ID", "1t5xEHgT-g6k9wAWspjXKDMssX0rNYhJS")
+# Dry-run: imprime o que escreveria, sem tocar a planilha. METAS_DRY_RUN=1 liga.
+METAS_DRY_RUN = os.environ.get("METAS_DRY_RUN", "").strip().lower() not in ("", "0", "false", "no")
+CAMPAIGN_YEAR = 2026
+
+# event_id -> abas na planilha de metas (espacos dentro dos colchetes como no original).
+METAS_TABS = {
+    86595: {"pagas": "Metas Pagas [ BSB ]", "gratuitas": "Metas Gratuitas [ BSB ]"},
+    86781: {"pagas": "Metas Pagas [ BH ]", "gratuitas": "Metas Gratuitas [ BH ]"},
+    87008: {"pagas": "Metas Pagas [ SSA ]", "gratuitas": "Metas Gratuitas [ SSA ]"},
+}
+
+# Colunas de detalhamento por tier que a automacao controla nas abas Pagas:
+# (header na planilha, chave no dict de contagem).
+META_TIER_COLS = [
+    ("Real. Básico", "Básico"),
+    ("Real. Premium", "Premium"),
+    ("Real. Combo", "Combo"),
+    ("Real. PCD", "PCD"),
+    ("Real. Gratuito", "Gratuito"),
+    ("Real. Total Pago", "Total Pago"),
+]
 
 
 # ===================================================
@@ -236,25 +268,26 @@ def to_sheet_row(p):
 # GOOGLE SHEETS
 # ===================================================
 
+def get_credentials(scopes=None):
+    """Credenciais da service account (compartilhadas entre gspread e Drive API)."""
+    if scopes is None:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+    if SERVICE_ACCOUNT_JSON:
+        return Credentials.from_service_account_info(json.loads(SERVICE_ACCOUNT_JSON), scopes=scopes)
+    if os.path.exists(SERVICE_ACCOUNT_FILE):
+        return Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+    raise Exception(
+        "Credenciais Google não encontradas. "
+        "Defina GOOGLE_SERVICE_ACCOUNT_JSON ou GOOGLE_SERVICE_ACCOUNT_FILE."
+    )
+
+
 def get_sheets_client():
     """Cria cliente gspread autenticado via service account."""
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-
-    if SERVICE_ACCOUNT_JSON:
-        info = json.loads(SERVICE_ACCOUNT_JSON)
-        creds = Credentials.from_service_account_info(info, scopes=scopes)
-    elif os.path.exists(SERVICE_ACCOUNT_FILE):
-        creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
-    else:
-        raise Exception(
-            "Credenciais Google não encontradas. "
-            "Defina GOOGLE_SERVICE_ACCOUNT_JSON ou GOOGLE_SERVICE_ACCOUNT_FILE."
-        )
-
-    return gspread.authorize(creds)
+    return gspread.authorize(get_credentials())
 
 
 def migrate_legacy_tab(sh):
@@ -400,6 +433,342 @@ def push_to_leadlovers(ll_sh, participants, event):
 
 
 # ===================================================
+# METAS — preenchimento da planilha semanal da Tamyris
+# ===================================================
+
+def parse_valor(x):
+    """valorUnitario pode vir como numero, string '99.00'/'99,00', None ou ''."""
+    if x is None:
+        return 0.0
+    if isinstance(x, (int, float)):
+        return float(x)
+    s = str(x).strip().replace(",", ".")
+    if not s:
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def parse_data_pedido(s):
+    """'DD/MM/YYYY HH:MM' (com ano) -> date. Tolera segundos e so data. None se falhar."""
+    if not s:
+        return None
+    s = str(s).strip()
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _norm_dash(s):
+    return str(s).replace("–", "-").replace("—", "-")
+
+
+def parse_periodo_fim(texto, year=CAMPAIGN_YEAR):
+    """'DD/MM - DD/MM' -> date da data FINAL (corte cumulativo). None se falhar."""
+    if not texto:
+        return None
+    parts = [p.strip() for p in _norm_dash(texto).split("-")]
+    if len(parts) < 2 or not parts[-1]:
+        return None
+    chunk = parts[-1].split("/")
+    try:
+        d, m = int(chunk[0]), int(chunk[1])
+        y = int(chunk[2]) if len(chunk) > 2 and chunk[2] else year
+        return date(y, m, d)
+    except (ValueError, IndexError):
+        return None
+
+
+def parse_inicio(texto, year=CAMPAIGN_YEAR):
+    """'DD/MM' (ou 'DD/MM/AAAA') -> date. None se falhar."""
+    if not texto:
+        return None
+    chunk = str(texto).strip().split("/")
+    try:
+        d, m = int(chunk[0]), int(chunk[1])
+        y = int(chunk[2]) if len(chunk) > 2 and chunk[2] else year
+        return date(y, m, d)
+    except (ValueError, IndexError):
+        return None
+
+
+def is_free(p):
+    """Gratis: valor 0 OU status Cortesia (cobre perna gratis de combo e cortesias)."""
+    return parse_valor(p.get("valor")) < 0.01 or (p.get("status") or "") == "Cortesia"
+
+
+def is_pcd(p):
+    return "PCD" in (p.get("categoria") or "").upper()
+
+
+def is_combo(p):
+    return "COMBO" in (p.get("categoria") or "").upper()
+
+
+def base_tier(p):
+    """Tier base de um inscrito PAGO: Premium se a categoria contem PREMIUM, senao Basico."""
+    return "Premium" if "PREMIUM" in (p.get("categoria") or "").upper() else "Básico"
+
+
+def tier_counts_cumulative(participants, end_date):
+    """Contagem cumulativa (dataPedido <= end_date) por tier.
+
+    Total Pago = Basico + Premium (valor>0, nao-cortesia). Combo e PCD sao
+    recortes informativos (subconjuntos), nao somam no total.
+    """
+    c = {"Básico": 0, "Premium": 0, "Combo": 0, "PCD": 0,
+         "Gratuito": 0, "Total Pago": 0, "_ignorados": 0}
+    for p in participants:
+        d = parse_data_pedido(p.get("dataPedido"))
+        if d is None:
+            c["_ignorados"] += 1
+            continue
+        if d > end_date:
+            continue
+        if is_free(p):
+            c["Gratuito"] += 1
+            continue
+        c["Total Pago"] += 1
+        c[base_tier(p)] += 1
+        if is_combo(p):
+            c["Combo"] += 1
+        if is_pcd(p):
+            c["PCD"] += 1
+    return c
+
+
+def gratuito_count_since(participants, inicio_date):
+    """Conta gratuitos (valor 0 ou Cortesia) com dataPedido >= inicio_date (todos se None)."""
+    n = 0
+    for p in participants:
+        d = parse_data_pedido(p.get("dataPedido"))
+        if d is None:
+            continue
+        if inicio_date and d < inicio_date:
+            continue
+        if is_free(p):
+            n += 1
+    return n
+
+
+def _norm_header(s):
+    return " ".join(str(s).strip().split()).casefold()
+
+
+def _to_int(x):
+    """Le um inteiro de uma celula (numero ou texto, tolera separador de milhar)."""
+    if isinstance(x, (int, float)):
+        return int(round(x))
+    s = "".join(ch for ch in str(x) if ch.isdigit())
+    return int(s) if s else None
+
+
+# --- Escrita IN-PLACE no proprio .xlsx (Drive API + openpyxl, preserva o mesmo link) ---
+# A Sheets API nao escreve em .xlsx. O robo baixa o arquivo fresco, edita SO as celulas
+# de Realizado/Gap/Real.* com openpyxl (preserva todo o resto) e sobe nova versao via Drive
+# (mesmo fileId = mesmo link). openpyxl mantem valores, estilos e larguras (testado).
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _norm_sheet(s):
+    """Nome de aba normalizado: remove colchetes (proibidos em .xlsx), colapsa espacos, casefold."""
+    s = str(s).replace("[", " ").replace("]", " ")
+    return " ".join(s.split()).casefold()
+
+
+def _find_ws(wb, logical_name):
+    target = _norm_sheet(logical_name)
+    for ws in wb.worksheets:
+        if _norm_sheet(ws.title) == target:
+            return ws
+    return None
+
+
+def _header_map_xlsx(ws):
+    return {_norm_header(ws.cell(1, c).value): c
+            for c in range(1, ws.max_column + 1)
+            if ws.cell(1, c).value not in (None, "")}
+
+
+def _ensure_cols(ws, names):
+    """Garante headers na linha 1 (anexa a direita os que faltam, idempotente). Retorna o mapa."""
+    hmap = _header_map_xlsx(ws)
+    nxt = ws.max_column + 1
+    for nm in names:
+        if _norm_header(nm) not in hmap:
+            ws.cell(1, nxt).value = nm
+            hmap[_norm_header(nm)] = nxt
+            nxt += 1
+    return hmap
+
+
+def write_metas_pagas_xlsx(ws, participants, label):
+    """Escreve Realizado(=Total Pago), Gap e colunas Real.* por semana. So toca essas celulas."""
+    hmap = _header_map_xlsx(ws)
+    col_semana = hmap.get(_norm_header("Semana"))
+    col_periodo = hmap.get(_norm_header("Período"))
+    col_real = hmap.get(_norm_header("Realizado"))
+    col_acum = hmap.get(_norm_header("Acumulado"))
+    if not (col_semana and col_periodo and col_real):
+        print(f"  [METAS] {label}: faltam cabecalhos Semana/Periodo/Realizado — pulando aba")
+        return 0
+    # garante colunas de tier + Gap a direita (idempotente)
+    hmap = _ensure_cols(ws, [n for n, _ in META_TIER_COLS] + ["Gap"])
+    col_gap = hmap.get(_norm_header("Gap"))
+    tier_idx = {name: hmap.get(_norm_header(name)) for name, _ in META_TIER_COLS}
+
+    n = 0
+    seen = {}
+    ignorados = 0
+    for r in range(2, ws.max_row + 1):
+        semana = ws.cell(r, col_semana).value
+        if semana is None or not str(semana).strip():
+            continue
+        if not str(semana).strip().lower().startswith("semana"):
+            continue  # ignora linhas fora da tabela semanal (ex: bloco de metas por tier)
+        periodo_txt = str(ws.cell(r, col_periodo).value or "").strip()
+        fim = parse_periodo_fim(periodo_txt)
+        if fim is None:
+            print(f"  [METAS] {label} {semana}: Periodo '{periodo_txt}' nao parseavel — pulando linha")
+            continue
+        if periodo_txt in seen:
+            print(f"  [METAS] {label} {semana}: Periodo duplicado '{periodo_txt}' (= {seen[periodo_txt]}) — revisar datas")
+        seen[periodo_txt] = semana
+        counts = tier_counts_cumulative(participants, fim)
+        ignorados = max(ignorados, counts["_ignorados"])
+        ws.cell(r, col_real).value = counts["Total Pago"]
+        if col_gap and col_acum:
+            # Gap como FORMULA (=Acumulado-Realizado): o Acumulado da Tamyris e formula,
+            # entao o openpyxl nao tem o valor calculado. Deixa o Google avaliar e auto-atualizar.
+            from openpyxl.utils import get_column_letter
+            ws.cell(r, col_gap).value = f"={get_column_letter(col_acum)}{r}-{get_column_letter(col_real)}{r}"
+        for name, key in META_TIER_COLS:
+            ci = tier_idx.get(name)
+            if ci:
+                ws.cell(r, ci).value = counts[key]
+        if METAS_DRY_RUN:
+            print(f"  [METAS DRY] {label} {semana} (<= {fim}): Total={counts['Total Pago']} "
+                  f"Bas={counts['Básico']} Prem={counts['Premium']} Combo={counts['Combo']} "
+                  f"PCD={counts['PCD']} Grat={counts['Gratuito']}")
+        n += 1
+    if ignorados:
+        print(f"  [METAS] {label}: {ignorados} inscritos com dataPedido nao parseavel (ignorados)")
+    print(f"  [METAS] {label}: {n} semanas processadas")
+    return n
+
+
+def write_metas_gratuitas_xlsx(ws, participants, label):
+    """Escreve Realizado (gratis cumulativo desde Inicio Monitoramento) e Gap na linha 2."""
+    hmap = _ensure_cols(ws, ["Realizado", "Gap"])
+    col_inicio = hmap.get(_norm_header("Início Monitoramento"))
+    col_meta = hmap.get(_norm_header("Meta Gratuitas"))
+    col_real = hmap.get(_norm_header("Realizado"))
+    col_gap = hmap.get(_norm_header("Gap"))
+    if ws.max_row < 2:
+        print(f"  [METAS] {label} gratuitas: sem linha de dados — pulando")
+        return 0
+    inicio = parse_inicio(ws.cell(2, col_inicio).value) if col_inicio else None
+    g = gratuito_count_since(participants, inicio)
+    ws.cell(2, col_real).value = g
+    if col_gap and col_meta:
+        from openpyxl.utils import get_column_letter
+        ws.cell(2, col_gap).value = f"={get_column_letter(col_meta)}2-{get_column_letter(col_real)}2"
+    print(f"  [METAS] {label} gratuitas: Realizado={g} (desde {inicio})")
+    return 1
+
+
+def ensure_gratuitas_ssa(wb):
+    """Cria a aba Gratuitas SSA se nao existir (.xlsx nao aceita colchetes no nome da aba)."""
+    if _find_ws(wb, "Metas Gratuitas [ SSA ]") is not None:
+        return
+    ws = wb.create_sheet(title="Metas Gratuitas  SSA")
+    ws.append(["Início Monitoramento", "Meta Gratuitas", "Observação", "Realizado", "Gap"])
+    ws.append(["", 300, "Monitorar distribuição e engajamento", "", ""])
+    print("  [METAS] aba 'Metas Gratuitas  SSA' criada (Meta 300 provisoria)")
+
+
+def _drive_service():
+    from googleapiclient.discovery import build
+    creds = get_credentials(["https://www.googleapis.com/auth/drive"])
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def _download_xlsx(drive, file_id):
+    from googleapiclient.http import MediaIoBaseDownload
+
+    def _do():
+        buf = io.BytesIO()
+        dl = MediaIoBaseDownload(buf, drive.files().get_media(fileId=file_id, supportsAllDrives=True))
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        return buf.getvalue()
+
+    return _retry(_do, "metas download")
+
+
+def _upload_xlsx(drive, file_id, data):
+    from googleapiclient.http import MediaIoBaseUpload
+
+    def _do():
+        media = MediaIoBaseUpload(io.BytesIO(data), mimetype=XLSX_MIME, resumable=False)
+        return drive.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
+
+    return _retry(_do, "metas upload")
+
+
+def sync_metas(participants_por_cidade):
+    """Atualiza a planilha de metas (.xlsx in-place via Drive). Isolada: nunca derruba o sync."""
+    import openpyxl
+    if not METAS_SPREADSHEET_ID:
+        print("  [METAS] METAS_SPREADSHEET_ID nao configurado — pulando metas.")
+        return
+    if METAS_DRY_RUN:
+        print("  [METAS] *** DRY-RUN: nada sera enviado ao Drive ***")
+    drive = _drive_service()
+    try:
+        data = _download_xlsx(drive, METAS_SPREADSHEET_ID)
+    except Exception as e:
+        print(f"  [METAS] nao consegui baixar a planilha: {e}")
+        print("  [METAS] confira: Drive API ativa, arquivo compartilhado com a SA, METAS_SPREADSHEET_ID correto.")
+        return
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    ensure_gratuitas_ssa(wb)
+    total = 0
+    for event_id, tabs in METAS_TABS.items():
+        parts = participants_por_cidade.get(event_id, [])
+        wsp = _find_ws(wb, tabs["pagas"])
+        if wsp is not None:
+            try:
+                total += write_metas_pagas_xlsx(wsp, parts, tabs["pagas"])
+            except Exception as e:
+                print(f"  [METAS] erro em '{tabs['pagas']}': {e}")
+        else:
+            print(f"  [METAS] aba '{tabs['pagas']}' nao encontrada — pulando")
+        wsg = _find_ws(wb, tabs["gratuitas"])
+        if wsg is not None:
+            try:
+                total += write_metas_gratuitas_xlsx(wsg, parts, tabs["gratuitas"])
+            except Exception as e:
+                print(f"  [METAS] erro em '{tabs['gratuitas']}': {e}")
+        else:
+            print(f"  [METAS] aba '{tabs['gratuitas']}' nao encontrada — pulando")
+    if METAS_DRY_RUN:
+        print(f"  [METAS] DRY-RUN: {total} blocos calculados, planilha NAO enviada.")
+        return
+    out = io.BytesIO()
+    wb.save(out)
+    _upload_xlsx(drive, METAS_SPREADSHEET_ID, out.getvalue())
+    print(f"  [METAS] planilha atualizada in-place ({total} blocos).")
+
+
+# ===================================================
 # MAIN
 # ===================================================
 
@@ -418,16 +787,25 @@ def main():
     ll_sh = get_ll_sheet(gc)
 
     total_inscritos = 0
+    participants_por_cidade = {}
     for ev in EVENTS:
         print(f"\n[{ev['label']}] event_id={ev['id']}")
         participants = fetch_all_orders(token, ev["id"])
         print(f"  Total: {len(participants)} inscritos")
+        participants_por_cidade[ev["id"]] = participants
         rows = [to_sheet_row(p) for p in participants]
         write_raw_tab(sh, rows, ev["raw_tab"])
         push_to_leadlovers(ll_sh, participants, ev)
         total_inscritos += len(participants)
 
     update_timestamps(sh, [ev["dash_tab"] for ev in EVENTS])
+
+    # Metas: ultima etapa, isolada — nunca pode derrubar o sync de raw/Leadlovers.
+    try:
+        print("\n[METAS] atualizando planilha de metas...")
+        sync_metas(participants_por_cidade)
+    except Exception as e:
+        print(f"  [METAS] etapa de metas falhou (sync principal seguiu OK): {e}")
 
     print(f"\n=== Concluído: {total_inscritos} inscritos em {len(EVENTS)} etapas ===")
 
