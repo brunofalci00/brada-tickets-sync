@@ -620,7 +620,8 @@ def _ensure_cols(ws, names):
 
 
 def write_metas_pagas_xlsx(ws, participants, label, hoje=None):
-    """Escreve Realizado(=Total Pago), Gap e colunas Real.* por semana. So toca essas celulas.
+    """Escreve Realizado (valor SEMANAL = quantos entraram naquela semana), Gap (=Meta-Realizado)
+    e colunas Real.* por semana. So toca essas celulas.
 
     Semanas cujo inicio > hoje (BRT) ficam em branco (preenchem quando a semana chega).
     """
@@ -629,7 +630,7 @@ def write_metas_pagas_xlsx(ws, participants, label, hoje=None):
     col_semana = hmap.get(_norm_header("Semana"))
     col_periodo = hmap.get(_norm_header("Período"))
     col_real = hmap.get(_norm_header("Realizado"))
-    col_acum = hmap.get(_norm_header("Acumulado"))
+    col_meta = hmap.get(_norm_header("Meta")) or hmap.get(_norm_header("Meta Vendas Pagas"))
     if not (col_semana and col_periodo and col_real):
         print(f"  [METAS] {label}: faltam cabecalhos Semana/Periodo/Realizado — pulando aba")
         return 0
@@ -641,6 +642,7 @@ def write_metas_pagas_xlsx(ws, participants, label, hoje=None):
     n = 0
     seen = {}
     ignorados = 0
+    prev_cum = {}  # acumulado da semana anterior, p/ derivar o valor SEMANAL (cum - prev_cum)
     for r in range(2, ws.max_row + 1):
         semana = ws.cell(r, col_semana).value
         if semana is None or not str(semana).strip():
@@ -668,22 +670,23 @@ def write_metas_pagas_xlsx(ws, participants, label, hoje=None):
                 print(f"  [METAS DRY] {label} {semana}: FUTURA ({periodo_txt}) -> branco")
             n += 1
             continue
-        counts = tier_counts_cumulative(participants, fim)
-        ignorados = max(ignorados, counts["_ignorados"])
-        ws.cell(r, col_real).value = counts["Total Pago"]
-        if col_gap and col_acum:
-            # Gap como FORMULA (=Acumulado-Realizado): o Acumulado da Tamyris e formula,
-            # entao o openpyxl nao tem o valor calculado. Deixa o Google avaliar e auto-atualizar.
+        cum = tier_counts_cumulative(participants, fim)
+        ignorados = max(ignorados, cum["_ignorados"])
+        # valor SEMANAL = quantos entraram NAQUELA semana = cumulativo - cumulativo da anterior
+        weekly = {k: cum.get(k, 0) - prev_cum.get(k, 0)
+                  for k in ("Básico", "Premium", "Combo", "PCD", "Gratuito", "Total Pago")}
+        prev_cum = cum
+        ws.cell(r, col_real).value = weekly["Total Pago"]
+        if col_gap and col_meta:
+            # Gap = Meta - Realizado (ambos da semana), como FORMULA pro Google avaliar.
             from openpyxl.utils import get_column_letter
-            ws.cell(r, col_gap).value = f"={get_column_letter(col_acum)}{r}-{get_column_letter(col_real)}{r}"
+            ws.cell(r, col_gap).value = f"={get_column_letter(col_meta)}{r}-{get_column_letter(col_real)}{r}"
         for name, key in META_TIER_COLS:
             ci = tier_idx.get(name)
             if ci:
-                ws.cell(r, ci).value = counts[key]
+                ws.cell(r, ci).value = weekly[key]
         if METAS_DRY_RUN:
-            print(f"  [METAS DRY] {label} {semana} (<= {fim}): Total={counts['Total Pago']} "
-                  f"Bas={counts['Básico']} Prem={counts['Premium']} Combo={counts['Combo']} "
-                  f"PCD={counts['PCD']} Grat={counts['Gratuito']}")
+            print(f"  [METAS DRY] {label} {semana}: semana={weekly['Total Pago']} (cum={cum['Total Pago']})")
         n += 1
     if ignorados:
         print(f"  [METAS] {label}: {ignorados} inscritos com dataPedido nao parseavel (ignorados)")
