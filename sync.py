@@ -97,11 +97,11 @@ METAS_SPREADSHEET_ID = os.environ.get("METAS_SPREADSHEET_ID") or "1t5xEHgT-g6k9w
 METAS_DRY_RUN = os.environ.get("METAS_DRY_RUN", "").strip().lower() not in ("", "0", "false", "no")
 CAMPAIGN_YEAR = 2026
 
-# event_id -> abas na planilha de metas (espacos dentro dos colchetes como no original).
+# UMA aba por cidade (tabela Pagas semanal + bloco por tier + resumo Gratuitas, tudo junto).
 METAS_TABS = {
-    86595: {"pagas": "Metas Pagas [ BSB ]", "gratuitas": "Metas Gratuitas [ BSB ]"},
-    86781: {"pagas": "Metas Pagas [ BH ]", "gratuitas": "Metas Gratuitas [ BH ]"},
-    87008: {"pagas": "Metas Pagas [ SSA ]", "gratuitas": "Metas Gratuitas [ SSA ]"},
+    86595: "Metas [ BSB ]",
+    86781: "Metas [ BH ]",
+    87008: "Metas [ SSA ]",
 }
 
 # Colunas de detalhamento por tier que a automacao controla nas abas Pagas:
@@ -695,21 +695,35 @@ def write_metas_pagas_xlsx(ws, participants, label, hoje=None):
 
 
 def write_metas_gratuitas_xlsx(ws, participants, label):
-    """Escreve Realizado (gratis cumulativo desde Inicio Monitoramento) e Gap na linha 2."""
-    hmap = _ensure_cols(ws, ["Realizado", "Gap"])
-    col_inicio = hmap.get(_norm_header("Início Monitoramento"))
-    col_meta = hmap.get(_norm_header("Meta Gratuitas"))
-    col_real = hmap.get(_norm_header("Realizado"))
-    col_gap = hmap.get(_norm_header("Gap"))
-    if ws.max_row < 2:
-        print(f"  [METAS] {label} gratuitas: sem linha de dados — pulando")
+    """Escreve o Realizado das gratuitas na secao 'Inicio Monitoramento' (em QUALQUER lugar da aba).
+
+    Funciona tanto na aba consolidada (secao mais embaixo) quanto numa aba so de gratuitas (linha 1).
+    """
+    hdr_row = None
+    for r in range(1, ws.max_row + 1):
+        for c in range(1, ws.max_column + 1):
+            if _norm_header(ws.cell(r, c).value) == _norm_header("Início Monitoramento"):
+                hdr_row = r
+                break
+        if hdr_row:
+            break
+    if hdr_row is None:
+        print(f"  [METAS] {label}: secao Gratuitas nao encontrada — pulando")
         return 0
-    inicio = parse_inicio(ws.cell(2, col_inicio).value) if col_inicio else None
+    cols = {_norm_header(ws.cell(hdr_row, c).value): c
+            for c in range(1, ws.max_column + 1) if ws.cell(hdr_row, c).value not in (None, "")}
+    col_inicio = cols.get(_norm_header("Início Monitoramento"))
+    col_meta = cols.get(_norm_header("Meta Gratuitas")) or cols.get(_norm_header("Meta"))
+    col_real = cols.get(_norm_header("Realizado"))
+    col_gap = cols.get(_norm_header("Gap"))
+    drow = hdr_row + 1  # linha de dados, logo abaixo do cabecalho da secao
+    inicio = parse_inicio(ws.cell(drow, col_inicio).value) if col_inicio else None
     g = gratuito_count_since(participants, inicio)
-    ws.cell(2, col_real).value = g
-    if col_gap and col_meta:
+    if col_real:
+        ws.cell(drow, col_real).value = g
+    if col_gap and col_meta and col_real:
         from openpyxl.utils import get_column_letter
-        ws.cell(2, col_gap).value = f"={get_column_letter(col_meta)}2-{get_column_letter(col_real)}2"
+        ws.cell(drow, col_gap).value = f"={get_column_letter(col_meta)}{drow}-{get_column_letter(col_real)}{drow}"
     print(f"  [METAS] {label} gratuitas: Realizado={g} (desde {inicio})")
     return 1
 
@@ -770,26 +784,21 @@ def sync_metas(participants_por_cidade):
         print("  [METAS] confira: Drive API ativa, arquivo compartilhado com a SA, METAS_SPREADSHEET_ID correto.")
         return
     wb = openpyxl.load_workbook(io.BytesIO(data))
-    ensure_gratuitas_ssa(wb)
     total = 0
-    for event_id, tabs in METAS_TABS.items():
+    for event_id, tab_name in METAS_TABS.items():
         parts = participants_por_cidade.get(event_id, [])
-        wsp = _find_ws(wb, tabs["pagas"])
-        if wsp is not None:
-            try:
-                total += write_metas_pagas_xlsx(wsp, parts, tabs["pagas"])
-            except Exception as e:
-                print(f"  [METAS] erro em '{tabs['pagas']}': {e}")
-        else:
-            print(f"  [METAS] aba '{tabs['pagas']}' nao encontrada — pulando")
-        wsg = _find_ws(wb, tabs["gratuitas"])
-        if wsg is not None:
-            try:
-                total += write_metas_gratuitas_xlsx(wsg, parts, tabs["gratuitas"])
-            except Exception as e:
-                print(f"  [METAS] erro em '{tabs['gratuitas']}': {e}")
-        else:
-            print(f"  [METAS] aba '{tabs['gratuitas']}' nao encontrada — pulando")
+        ws = _find_ws(wb, tab_name)
+        if ws is None:
+            print(f"  [METAS] aba '{tab_name}' nao encontrada — pulando")
+            continue
+        try:
+            total += write_metas_pagas_xlsx(ws, parts, tab_name)
+        except Exception as e:
+            print(f"  [METAS] erro pagas '{tab_name}': {e}")
+        try:
+            total += write_metas_gratuitas_xlsx(ws, parts, tab_name)
+        except Exception as e:
+            print(f"  [METAS] erro gratuitas '{tab_name}': {e}")
     if METAS_DRY_RUN:
         print(f"  [METAS] DRY-RUN: {total} blocos calculados, planilha NAO enviada.")
         return
