@@ -89,10 +89,10 @@ LL_SENT_HEADER = ["inscricao", "email", "nome", "data_envio"]
 # CONFIG METAS (planilha semanal da Tamyris — meta_corrida_vai_bem)
 # ===================================================
 
-# ID da planilha NATIVA (44 chars). Setar no GitHub Secrets apos converter o XLSX
-# para Sheet nativa e compartilhar com a service account.
 # ID do arquivo .xlsx no Drive (mesmo link que o time usa). Gravacao in-place via Drive API.
-METAS_SPREADSHEET_ID = os.environ.get("METAS_SPREADSHEET_ID", "1t5xEHgT-g6k9wAWspjXKDMssX0rNYhJS")
+# `or` (nao o default do get): secret inexistente no Actions vira string vazia, que sombrearia
+# o default; assim vazio/ausente cai no ID hardcoded.
+METAS_SPREADSHEET_ID = os.environ.get("METAS_SPREADSHEET_ID") or "1t5xEHgT-g6k9wAWspjXKDMssX0rNYhJS"
 # Dry-run: imprime o que escreveria, sem tocar a planilha. METAS_DRY_RUN=1 liga.
 METAS_DRY_RUN = os.environ.get("METAS_DRY_RUN", "").strip().lower() not in ("", "0", "false", "no")
 CAMPAIGN_YEAR = 2026
@@ -779,12 +779,12 @@ def main():
     gc = get_sheets_client()
 
     if SPREADSHEET_ID:
-        sh = gc.open_by_key(SPREADSHEET_ID)
+        sh = _retry(lambda: gc.open_by_key(SPREADSHEET_ID), "abrir dashboard")
     else:
-        sh = gc.open("Dashboard Inscrições - Vai Bem")
+        sh = _retry(lambda: gc.open("Dashboard Inscrições - Vai Bem"), "abrir dashboard")
 
     migrate_legacy_tab(sh)
-    ll_sh = get_ll_sheet(gc)
+    ll_sh = _retry(lambda: get_ll_sheet(gc), "abrir planilha LL")
 
     total_inscritos = 0
     participants_por_cidade = {}
