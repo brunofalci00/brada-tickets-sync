@@ -6,6 +6,7 @@ ao Leadlovers para disparo da regua de email.
 Roda via GitHub Actions (cron horario) ou manualmente.
 """
 
+import argparse
 import http.client
 import io
 import json
@@ -28,6 +29,7 @@ PAGE_LIMIT = 50
 # Etapas Corrida Vai Bem. Adicionar nova etapa = nova entrada aqui.
 EVENTS = [
     {
+        "key": "bsb",
         "id": 86595,
         "label": "Brasília",
         "raw_tab": "raw_inscritos_brasilia",
@@ -36,6 +38,7 @@ EVENTS = [
         "ll_sent_tab": "Etapa Brasilia",
     },
     {
+        "key": "bh",
         "id": 86781,
         "label": "Belo Horizonte",
         "raw_tab": "raw_inscritos_bh",
@@ -44,12 +47,26 @@ EVENTS = [
         "ll_sent_tab": "Etapa BH",
     },
     {
+        "key": "ssa",
         "id": 87008,
         "label": "Salvador",
         "raw_tab": "raw_inscritos_ssa",
         "dash_tab": "Salvador",
         "ll_sequence_env": "LL_SEQUENCE_SSA",
         "ll_sent_tab": "Etapa Salvador",
+    },
+    {
+        "key": "pedalx",
+        "id": 87735,
+        "label": "Pedal X Road — Brasília",
+        "raw_tab": "raw_inscritos_pedalx",
+        "dash_tab": "Pedal X Road",
+        "ll_sequence_env": "LL_SEQUENCE_PEDALX",
+        "ll_sent_tab": "Etapa Pedal X Road",
+        "timestamp_cell": "F2",
+        "non_blocking": True,
+        "expected_modalidades": {"Inscreva-se"},
+        "expected_categorias": {"Pedal X"},
     },
 ]
 
@@ -308,6 +325,11 @@ def migrate_legacy_tab(sh):
 
 def write_raw_tab(sh, rows, raw_tab_name):
     """Sobrescreve uma aba raw com os dados frescos."""
+    if not rows:
+        raise ValueError(
+            f"API retornou zero participantes para {raw_tab_name}; raw preservada."
+        )
+
     try:
         ws = sh.worksheet(raw_tab_name)
     except gspread.exceptions.WorksheetNotFound:
@@ -318,15 +340,21 @@ def write_raw_tab(sh, rows, raw_tab_name):
     print(f"  -> {len(rows)} linhas em {raw_tab_name}")
 
 
-def update_timestamps(sh, dash_tabs):
-    """Escreve timestamp da ultima sync em cada aba dashboard (celula C2)."""
+def update_timestamps(sh, events):
+    """Escreve timestamp na célula configurada; strings legadas usam C2."""
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
-    for tab in dash_tabs:
+    for event in events:
+        if isinstance(event, str):
+            tab = event
+            cell = "C2"
+        else:
+            tab = event["dash_tab"]
+            cell = event.get("timestamp_cell", "C2")
         try:
             ws = sh.worksheet(tab)
-            ws.update(values=[[now]], range_name="C2")
+            ws.update(values=[[now]], range_name=cell)
         except Exception as e:
-            print(f"  Aviso: timestamp {tab}: {e}")
+            print(f"  Aviso: timestamp {tab}!{cell}: {e}")
 
 
 # ===================================================
@@ -812,33 +840,107 @@ def sync_metas(participants_por_cidade):
 # MAIN
 # ===================================================
 
-def main():
+def check_event_schema(participants, event):
+    """Alerta quando surgem modalidade/categoria fora do contrato conhecido."""
+    checks = (
+        ("modalidades", "modalidade", event.get("expected_modalidades")),
+        ("categorias", "categoria", event.get("expected_categorias")),
+    )
+    warnings = []
+    for label, field, expected in checks:
+        if not expected:
+            continue
+        observed = {str(p.get(field, "")).strip() for p in participants if p.get(field)}
+        expected = set(expected)
+        if observed != expected:
+            missing = expected - observed
+            unexpected = observed - expected
+            warnings.append((label, {"missing": missing, "unexpected": unexpected}))
+            print(
+                f"  [SCHEMA WARNING] {event['label']}: {label} divergentes; "
+                f"observado={sorted(observed)!r}, esperado={sorted(expected)!r}"
+            )
+    return warnings
+
+
+def sync_event(token, sh, event, ll_sh=None, send_leads=True):
+    """Sincroniza um evento; o caller decide isolamento e efeitos auxiliares."""
+    print(f"\n[{event['label']}] event_id={event['id']}")
+    participants = fetch_all_orders(token, event["id"])
+    print(f"  Total: {len(participants)} inscritos")
+    check_event_schema(participants, event)
+    rows = [to_sheet_row(p) for p in participants]
+    write_raw_tab(sh, rows, event["raw_tab"])
+    if send_leads:
+        if ll_sh is None:
+            raise ValueError("ll_sh é obrigatório quando send_leads=True")
+        push_to_leadlovers(ll_sh, participants, event)
+    return participants
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Sync TicketSports -> Sheets")
+    parser.add_argument(
+        "--event",
+        choices=[event["key"] for event in EVENTS],
+        help="Seleciona um único evento; permitido somente com --raw-only.",
+    )
+    parser.add_argument(
+        "--raw-only",
+        action="store_true",
+        help="Atualiza somente a raw do evento selecionado, sem LL/timestamps/metas.",
+    )
+    args = parser.parse_args(argv)
+    if args.raw_only and not args.event:
+        parser.error("--raw-only exige --event")
+    if args.event and not args.raw_only:
+        parser.error("--event só pode ser usado com --raw-only")
+    return args
+
+
+def _open_dashboard(gc, require_id=False):
+    if SPREADSHEET_ID:
+        return _retry(lambda: gc.open_by_key(SPREADSHEET_ID), "abrir dashboard")
+    if require_id:
+        raise ValueError(
+            "SPREADSHEET_ID é obrigatório em --raw-only para impedir destino ambíguo."
+        )
+    return _retry(lambda: gc.open("Dashboard Inscrições - Vai Bem"), "abrir dashboard")
+
+
+def main(argv=None):
+    args = _parse_args(argv)
     print(f"=== Sync Ticketsports -> Sheets + Leadlovers ({datetime.now()}) ===")
 
     token = authenticate()
     gc = get_sheets_client()
+    sh = _open_dashboard(gc, require_id=args.raw_only)
 
-    if SPREADSHEET_ID:
-        sh = _retry(lambda: gc.open_by_key(SPREADSHEET_ID), "abrir dashboard")
-    else:
-        sh = _retry(lambda: gc.open("Dashboard Inscrições - Vai Bem"), "abrir dashboard")
+    if args.raw_only:
+        event = next(event for event in EVENTS if event["key"] == args.event)
+        participants = sync_event(token, sh, event, send_leads=False)
+        print(f"\n=== Raw-only concluído: {len(participants)} inscritos em {event['raw_tab']} ===")
+        return
 
     migrate_legacy_tab(sh)
     ll_sh = _retry(lambda: get_ll_sheet(gc), "abrir planilha LL")
 
     total_inscritos = 0
     participants_por_cidade = {}
-    for ev in EVENTS:
-        print(f"\n[{ev['label']}] event_id={ev['id']}")
-        participants = fetch_all_orders(token, ev["id"])
-        print(f"  Total: {len(participants)} inscritos")
-        participants_por_cidade[ev["id"]] = participants
-        rows = [to_sheet_row(p) for p in participants]
-        write_raw_tab(sh, rows, ev["raw_tab"])
-        push_to_leadlovers(ll_sh, participants, ev)
+    successful_events = []
+    for event in EVENTS:
+        try:
+            participants = sync_event(token, sh, event, ll_sh=ll_sh, send_leads=True)
+        except Exception as exc:
+            if event.get("non_blocking"):
+                print(f"  [NON-BLOCKING] {event['label']} falhou; demais etapas seguem: {exc}")
+                continue
+            raise
+        participants_por_cidade[event["id"]] = participants
+        successful_events.append(event)
         total_inscritos += len(participants)
 
-    update_timestamps(sh, [ev["dash_tab"] for ev in EVENTS])
+    update_timestamps(sh, successful_events)
 
     # Metas: ultima etapa, isolada — nunca pode derrubar o sync de raw/Leadlovers.
     try:
@@ -847,7 +949,7 @@ def main():
     except Exception as e:
         print(f"  [METAS] etapa de metas falhou (sync principal seguiu OK): {e}")
 
-    print(f"\n=== Concluído: {total_inscritos} inscritos em {len(EVENTS)} etapas ===")
+    print(f"\n=== Concluído: {total_inscritos} inscritos em {len(successful_events)} etapas ===")
 
 
 if __name__ == "__main__":
