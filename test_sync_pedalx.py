@@ -51,10 +51,14 @@ class SyncPedalXTests(unittest.TestCase):
         self.assertNotIn(87735, sync.METAS_TABS)
 
     def test_pedal_events_are_isolated_and_never_email(self):
-        """Os 3 pedais: fora das metas, non_blocking, e sem regua de e-mail.
+        """Os 3 pedais: metas so no backend nativo, non_blocking, e sem regua de e-mail.
 
         O secret de sequencia nao existe -> sync_to_leadlovers retorna cedo. Se alguem
         criar LL_SEQUENCE_PEDALX*, comeca a disparar e-mail sem querer.
+
+        Desde 28/07 os pedais TEM aba de meta, mas so nativa: o .xlsx (METAS_TABS) e da
+        Tamyris e so tem corridas, e METAS_CHART_TABS e a auto-cura do grafico daquele
+        arquivo — o grafico nativo e duravel e nao precisa.
         """
         pedais = [e for e in sync.EVENTS if e["key"].startswith("pedalx")]
         self.assertEqual(len(pedais), 3)
@@ -63,7 +67,8 @@ class SyncPedalXTests(unittest.TestCase):
                 self.assertTrue(event["non_blocking"])
                 self.assertEqual(event["timestamp_cell"], "F2")
                 self.assertNotIn(event["id"], sync.METAS_TABS)
-                self.assertNotIn(event["id"], sync.METAS_TABS_NATIVE)
+                self.assertNotIn(event["id"], sync.METAS_CHART_TABS)
+                self.assertIn(event["id"], sync.METAS_TABS_NATIVE)
                 self.assertEqual(os.environ.get(event["ll_sequence_env"], ""), "")
         ids = {e["id"] for e in pedais}
         self.assertEqual(ids, {87735, 87732, 87727})

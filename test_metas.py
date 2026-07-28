@@ -205,6 +205,143 @@ chk("nat_grat_gap_D", _um["D10"][0], "=B10-C10")           # gratuitas Gap em co
 chk("nat_never_AB", any(s[0] in "AB" for s in _starts), False)            # nunca escreve A/B (humano)
 chk("nat_C_only_grat", all(s == "C10" for s in _starts if s[0] == "C"), True)  # C so na gratuitas
 
+# =========================================================================
+# ABAS DE META DOS PEDAIS (setup_metas_pedal.py + write_metas_native)
+# =========================================================================
+import setup_metas_pedal as SP  # noqa: E402
+
+# --- regua semanal derivada (1a venda -> vespera do evento) ---
+_reguas = {k: SP.semanas(c["inicio"], c["evento"]) for k, c in SP.CONFIGS.items()}
+for _k, _r in _reguas.items():
+    chk(f"pedal_soma_500_{_k}", sum(m for _, _, m in _r), SP.META_TOTAL)
+    chk(f"pedal_sem_periodo_dup_{_k}", len({p for _, p, _ in _r}), len(_r))
+chk("pedal_n_road", len(_reguas["pedalx_road"]), 6)
+chk("pedal_n_manaus", len(_reguas["pedalx_manaus"]), 8)
+chk("pedal_n_canastra", len(_reguas["pedalx_canastra"]), 12)
+# ultima semana pode ser curta e termina na VESPERA do evento (Road: evento 30/08)
+chk("pedal_ultima_semana_road", _reguas["pedalx_road"][-1][1], "25/08 - 29/08")
+# limites se sobrepoem de proposito: o fim de uma semana e o inicio da seguinte
+chk("pedal_bordas_encaixam",
+    all(_reguas["pedalx_road"][i][1].split(" - ")[1] == _reguas["pedalx_road"][i + 1][1].split(" - ")[0]
+        for i in range(5)), True)
+# janela invalida deve estourar, nao gerar regua vazia
+try:
+    SP.semanas(date(2026, 8, 30), date(2026, 8, 30))
+    chk("pedal_janela_invalida", "sem erro", "ValueError")
+except ValueError:
+    chk("pedal_janela_invalida", "ValueError", "ValueError")
+
+# --- layout gerado: zebra, acumulado, bloco de tier ---
+_g, _m = SP.build_layout(SP.CONFIGS["pedalx_road"])
+
+
+def _bg(r, letra):
+    cd = _g[r - 1][SP.col_idx(letra)]
+    return (cd.get("userEnteredFormat") or {}).get("backgroundColor")
+
+
+def _v(r, letra):
+    uev = _g[r - 1][SP.col_idx(letra)].get("userEnteredValue") or {}
+    return uev.get("formulaValue", uev.get("stringValue", uev.get("numberValue")))
+
+
+# E e F NUNCA levam zebra: a formatacao condicional e dona dessas duas colunas (igual SSA)
+chk("pedal_zebra_par_em_C", _bg(2, "C"), SP.ZEBRA)
+chk("pedal_zebra_nunca_em_E", _bg(2, "E"), None)
+chk("pedal_zebra_nunca_em_F", _bg(2, "F"), None)
+chk("pedal_sem_zebra_impar", _bg(3, "C"), None)
+chk("pedal_acum_primeira", _v(2, "D"), "=C2")
+chk("pedal_acum_encadeado", _v(7, "D"), "=D6+C7")
+chk("pedal_tier_sem_meta", _v(_m["tier"], "B"), None)       # meta so na linha Total Pago
+chk("pedal_total_com_meta", _v(_m["total"], "B"), 500)
+chk("pedal_total_sumif_ptbr", _v(_m["total"], "C"), '=SUMIF($A:$A;"Semana*";$E:$E)')
+chk("pedal_coluna_D_visivel",
+    any("hiddenByUser" in str(r) for r in SP.build_requests(1, SP.CONFIGS["pedalx_road"])[0]), False)
+
+# --- o grid do builder tem que ser legivel pelo writer do cron (as duas metades encaixam) ---
+def _as_text(grid):
+    """CellData -> list-of-lists de string, como ws.get_values() devolveria."""
+    out = []
+    for row in grid:
+        linha = []
+        for cd in row:
+            uev = cd.get("userEnteredValue") or {}
+            if "stringValue" in uev:
+                linha.append(uev["stringValue"])
+            elif "numberValue" in uev:
+                linha.append(str(int(uev["numberValue"])))
+            elif "formulaValue" in uev:
+                linha.append("0")          # o Sheets devolveria o valor calculado
+            else:
+                linha.append("")
+        out.append(linha)
+    return out
+
+
+_gt = _as_text(_g)
+chk("pedal_schema_guard_A", sync._norm_header(_gt[0][0]), sync._norm_header("Semana"))
+chk("pedal_schema_guard_E", sync._norm_header(_gt[0][4]), sync._norm_header("Realizado"))
+chk("pedal_schema_guard_F", sync._norm_header(_gt[0][5]), sync._norm_header("Gap"))
+
+# 25/07: dentro da Semana 0 (21/07-28/07). Semanas 2+ ainda sao futuras nessa data.
+_HOJE_P = date(2026, 7, 25)
+_pp = [P("Pedal X", "139,00", data="22/07/2026 09:00"),
+       P("Pedal X", "139,00", data="24/07/2026 09:00")]
+_pu, _pc, _plog = sync._build_metas_writes(_gt, _pp, "Metas Pedal Road", _HOJE_P)
+_pum = {d["range"]: d["values"][0] for d in _pu}
+chk("pedal_sem0_total", _pum["E2:K2"][0], 2)
+chk("pedal_sem0_gap", _pum["E2:K2"][1], "=C2-E2")
+# tier unico: tudo cai em Basico (G); Premium/Combo/PCD zerados
+chk("pedal_sem0_basico_igual_total", _pum["E2:K2"][2], _pum["E2:K2"][0])
+chk("pedal_sem0_sem_premium", _pum["E2:K2"][3:6], [0, 0, 0])
+chk("pedal_semana_curta_parseia", sync.parse_periodo_fim("25/08 - 29/08"), date(2026, 8, 29))
+# em 25/07 so a Semana 0 ja comecou; da Semana 1 (inicio 28/07) em diante e tudo futuro
+chk("pedal_futuras_limpas", sorted(_pc), ["E3:K3", "E4:K4", "E5:K5", "E6:K6", "E7:K7"])
+# gratuitas com Meta em branco: Realizado ainda e escrito e o Gap sai como formula
+chk("pedal_grat_real", _pum[f'C{_m["grat"]}'][0], 0)
+chk("pedal_grat_gap", _pum[f'D{_m["grat"]}'][0], f'=B{_m["grat"]}-C{_m["grat"]}')
+_pstarts = [r.split(":")[0] for r in _pum]
+chk("pedal_nunca_AB", any(s[0] in "AB" for s in _pstarts), False)
+chk("pedal_D_so_na_gratuitas",
+    all(s == f'D{_m["grat"]}' for s in _pstarts if s[0] == "D"), True)
+
+# --- guarda: etapa nao sincronizada != etapa com zero inscritos ---
+import gspread as _gs  # noqa: E402
+
+
+class _SheetEspiao:
+    """Registra que abas foram pedidas. Levanta WorksheetNotFound pra nao seguir pra rede."""
+
+    def __init__(self):
+        self.pedidas = []
+
+    def worksheet(self, nome):
+        self.pedidas.append(nome)
+        raise _gs.exceptions.WorksheetNotFound(nome)
+
+
+_esp = _SheetEspiao()
+sync.write_metas_native(_esp, {})
+chk("guarda_run_vazio_nao_toca_aba", _esp.pedidas, [])
+_esp2 = _SheetEspiao()
+sync.write_metas_native(_esp2, {87735: []})
+chk("guarda_chave_presente_processa", _esp2.pedidas, ["Metas Pedal Road"])
+
+# --- registro dos 6 eventos e protecao no outro builder ---
+import redesign_dashboard as _rd  # noqa: E402
+
+chk("metas_native_6_eventos", len(sync.METAS_TABS_NATIVE), 6)
+chk("metas_native_cobre_pedais",
+    {87735, 87732, 87727} <= set(sync.METAS_TABS_NATIVE), True)
+chk("metas_pedal_fora_do_xlsx",
+    set(sync.METAS_TABS_NATIVE) - set(sync.METAS_TABS), {87735, 87732, 87727})
+_titulos_pedal = {c["tab"] for c in SP.CONFIGS.values()}
+chk("titulos_batem_com_sync", _titulos_pedal <= set(sync.METAS_TABS_NATIVE.values()), True)
+chk("titulos_protegidos_no_builder", _titulos_pedal <= _rd.PROTECTED_TITLES, True)
+# nenhuma aba de meta pode ser dash_tab de config do builder (senao _validate_custom recusaria)
+chk("meta_nao_e_dash_tab",
+    _titulos_pedal & {c["dash_tab"] for c in _rd.DASHBOARD_CONFIGS.values()}, set())
+
 print()
 if _fail:
     print(f"=== {_fail} FALHAS ===")

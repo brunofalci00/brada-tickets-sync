@@ -176,7 +176,17 @@ META_TIER_COLS = [
 _mb = (os.environ.get("METAS_BACKEND") or "both").strip().lower()
 METAS_BACKEND = _mb if _mb in ("native", "xlsx", "both") else "both"
 # Abas nativas (nomes limpos — nativo aceita, ao contrario do .xlsx que proibia colchetes).
-METAS_TABS_NATIVE = {86595: "Metas BSB", 86781: "Metas BH", 87008: "Metas SSA"}
+# Os 3 pedais sao NATIVO-ONLY: nao entram em METAS_TABS (o .xlsx e da Tamyris e so tem
+# corridas) nem em METAS_CHART_TABS (auto-cura e do grafico do .xlsx; o nativo e duravel).
+# Build das abas: setup_metas_pedal.py.
+METAS_TABS_NATIVE = {
+    86595: "Metas BSB",
+    86781: "Metas BH",
+    87008: "Metas SSA",
+    87735: "Metas Pedal Road",
+    87732: "Metas Pedal Manaus",
+    87727: "Metas Pedal Canastra",
+}
 # Colunas FIXAS (letra) do detalhamento por tier na tabela semanal nativa.
 META_TIER_COLS_NATIVE = [("G", "Básico"), ("H", "Premium"), ("I", "Combo"), ("J", "PCD"), ("K", "Gratuito")]
 
@@ -900,11 +910,20 @@ def write_metas_native(sh, participants_por_cidade):
     build setup_metas_native.py); so escreve as celulas computadas."""
     hoje = _today_brt()
     for event_id, tab_name in METAS_TABS_NATIVE.items():
-        participants = participants_por_cidade.get(event_id, [])
+        # Etapa AUSENTE do dict != etapa com zero inscritos. Os pedais sao `non_blocking`:
+        # quando a API falha, main() da `continue` e nunca grava a chave. Sem esta guarda, o
+        # `.get(..., [])` devolveria lista vazia e escreveria 0 em todas as semanas passadas,
+        # apagando numero bom ate o run seguinte. Lista vazia com a chave presente (loja
+        # aberta que ainda nao vendeu) continua escrevendo 0, que e o correto.
+        if event_id not in participants_por_cidade:
+            print(f"  [METAS] {tab_name}: etapa nao sincronizada neste run — pulando (nao zera a aba)")
+            continue
+        participants = participants_por_cidade[event_id]
         try:
             ws = sh.worksheet(tab_name)
         except gspread.exceptions.WorksheetNotFound:
-            print(f"  [METAS] aba nativa '{tab_name}' não encontrada (rodar setup_metas_native.py?) — pulando")
+            builder = "setup_metas_pedal.py" if "Pedal" in tab_name else "setup_metas_native.py"
+            print(f"  [METAS] aba nativa '{tab_name}' não encontrada (rodar {builder}?) — pulando")
             continue
         try:
             grid = _retry(lambda: ws.get_values(), f"metas read {tab_name}")

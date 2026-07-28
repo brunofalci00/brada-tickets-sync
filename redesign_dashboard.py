@@ -381,6 +381,7 @@ def _build_legacy_dashboard(sh, label, raw_tab, dash_tab, has_nubank=True, modal
 PROTECTED_TITLES = {
     "Brasília", "Belo Horizonte", "Salvador",
     "Metas SSA", "Metas BH", "Metas BSB",
+    "Metas Pedal Road", "Metas Pedal Manaus", "Metas Pedal Canastra",
     "raw_inscritos_brasilia", "raw_inscritos_bh", "raw_inscritos_ssa",
     "raw_inscritos_pedalx", "raw_inscritos_pedalx_manaus", "raw_inscritos_pedalx_canastra",
 }
