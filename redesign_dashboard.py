@@ -828,6 +828,10 @@ def _build_custom_dashboard(sh, label, raw_tab, dash_tab, has_nubank, modalidade
              halign="CENTER", number_format={"type": "PERCENT", "pattern": "0%"}),
         _fmt(sid, r_cup_total, 2, r_cup_total, 4, bg=LARANJA_50, fg=LARANJA_500,
              bold=True, size=11, halign="CENTER", valign="MIDDLE", borders=BORDA_TOTAL),
+        # Sem isto a celula de % do Total exibe "1" em vez de "100%".
+        _fmt(sid, r_cup_total, 4, r_cup_total, 4, bg=LARANJA_50, fg=LARANJA_500,
+             bold=True, size=11, halign="CENTER", valign="MIDDLE", borders=BORDA_TOTAL,
+             number_format={"type": "PERCENT", "pattern": "0%"}),
         _merge(sid, r_footer, 2, r_footer, 8),
         _fmt(sid, r_footer, 2, r_footer, 8, fg=CINZA_FOOTER, italic=True, size=8,
              halign="CENTER"),
