@@ -351,6 +351,24 @@ def guard(requests, permitidos):
         raise SystemExit(f"GUARD ABORT: requests mirando abas fora do alvo {sorted(invasores)}")
 
 
+def reposicionar(svc, titulos):
+    """Move as abas recem-criadas para logo depois da ultima aba 'Metas *' que nao seja
+    delas. `addSheet` sempre acrescenta no fim, o que jogaria as abas de meta para depois
+    das raws ocultas — longe das outras metas, onde o time procura."""
+    d = svc.spreadsheets().get(spreadsheetId=SPREADSHEET_ID,
+                               fields="sheets.properties(sheetId,index,title)").execute()
+    props = [s["properties"] for s in d["sheets"]]
+    ancora = max((p["index"] for p in props
+                  if p["title"].startswith("Metas") and p["title"] not in titulos), default=-1)
+    ids = {p["title"]: p["sheetId"] for p in props}
+    req = [{"updateSheetProperties": {"properties": {"sheetId": ids[t], "index": ancora + 1 + i},
+                                      "fields": "index"}}
+           for i, t in enumerate(titulos) if t in ids]
+    if req:
+        svc.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body={"requests": req}).execute()
+        print(f"  posicionadas a partir do indice {ancora + 1}")
+
+
 def main(keys, dry=False, force=False):
     if dry:
         for key in keys:
@@ -400,6 +418,7 @@ def main(keys, dry=False, force=False):
         marcos[cfg["tab"]] = m
     guard(req2, set(ids.values()))
     svc.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body={"requests": req2}).execute()
+    reposicionar(svc, [CONFIGS[k]["tab"] for k in keys])
 
     for titulo, m in marcos.items():
         print(f'  {titulo}: {m["n"]} semanas (linhas {m["wk0"]}-{m["wkN"]}), '
