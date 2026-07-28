@@ -375,11 +375,33 @@ def _build_legacy_dashboard(sh, label, raw_tab, dash_tab, has_nubank=True, modal
     print(f"  -> Aba '{dash_tab}' redesenhada com sucesso (n={n} modalidades, Total@r{R_TOTAL}).")
 
 
+# Abas que NENHUMA config pode escrever. Atencao: nao incluir aqui o dash_tab de uma
+# config existente — _validate_custom recusa dash_tab que esteja nesta lista, e a propria
+# config pararia de rodar. A protecao entre os pedais vem de allowed_dash_tabs.
 PROTECTED_TITLES = {
     "Brasília", "Belo Horizonte", "Salvador",
     "Metas SSA", "Metas BH", "Metas BSB",
     "raw_inscritos_brasilia", "raw_inscritos_bh", "raw_inscritos_ssa",
+    "raw_inscritos_pedalx", "raw_inscritos_pedalx_manaus", "raw_inscritos_pedalx_canastra",
 }
+
+# Mesmos baldes nas tres etapas de pedal, para o time comparar etapa a etapa.
+# Criterios sem acento e por *contains*: titulos da TicketSports chegam com espaco
+# sobrando (ex.: "Federação ") e o curinga do Sheets e sensivel a acento.
+PEDAL_COUPON_BUCKETS = [
+    {"label": "Nubank", "criteria": [("F", "*NUBANK*")]},
+    {"label": "Federação", "criteria": [("F", "*Federa*")]},
+    {"label": "Assessoria", "criteria": [("F", "*Assessoria*")]},
+    {"label": "Cortesia", "criteria": [("F", "*cortesia*")]},
+    {"label": "Sem cupom", "criteria": [("F", ""), ("A", "<>")]},
+    {"label": "Outros", "residual": True},
+]
+
+# Colunas Masculino/Feminino do bloco resumo dos MTBs.
+_SEXO_COLUMNS = [
+    {"header": "Masculino", "criteria": [("D", "M")]},
+    {"header": "Feminino", "criteria": [("D", "F")]},
+]
 
 DASHBOARD_CONFIGS = {
     "bsb": {
@@ -402,21 +424,132 @@ DASHBOARD_CONFIGS = {
     },
     "pedalx": {
         "label": "Brasília", "raw_tab": "raw_inscritos_pedalx", "dash_tab": "Pedal X Road",
-        "has_nubank": False, "modalidades": [("Inscreva-se", "Inscreva-se")],
+        "has_nubank": True, "modalidades": [("Inscreva-se", "Inscreva-se")],
         "title": "PEDAL X ROAD — BRASÍLIA",
         "breakdown_title": "INSCRITOS POR MODALIDADE E CATEGORIA",
         "kit_columns": [{"header": "Pedal X", "criteria": [("B", "Pedal X")]}],
-        "coupon_buckets": [
-            {"label": "Sem cupom", "criteria": [("F", ""), ("A", "<>")]},
-            {"label": "Outros", "residual": True},
-        ],
+        "coupon_buckets": PEDAL_COUPON_BUCKETS,
         "timestamp_cell": "F2", "protected_titles": PROTECTED_TITLES,
         "allowed_dash_tabs": {"Pedal X Road"},
         "expected_modalidades": {"Inscreva-se"},
         "expected_categorias": {"Pedal X"},
         "accepted_statuses": {"Pago", "Cortesia"},
     },
+    # --- MTBs: a "modalidade" e a categoria etaria x sexo, e a "categoria" e a prova/kit.
+    # Os criterios de modalidade sao LITERAIS (a TicketSports cadastrou varios com erro de
+    # digitacao: espaco duplo, "12ou mais", "35 A 39", espaco antes do pipe). Normalizar
+    # quebraria a contagem em silencio — o rotulo exibido e que foi limpo. Os typos estao
+    # registrados como achado para cobrar do fornecedor.
+    # Criterios de prova por *contains* e sem acento ("*60 km*" em vez de "*PRÓ*").
+    "pedalx_manaus": {
+        "label": "Manaus", "raw_tab": "raw_inscritos_pedalx_manaus",
+        "dash_tab": "Pedal X Manaus", "has_nubank": True,
+        "title": "PEDAL X MTB — MANAUS",
+        "coupon_buckets": PEDAL_COUPON_BUCKETS,
+        "timestamp_cell": "F2", "protected_titles": PROTECTED_TITLES,
+        "allowed_dash_tabs": {"Pedal X Manaus"},
+        "accepted_statuses": {"Pago", "Cortesia"},
+        "expected_categorias": {"Kit PedalX - XCO", "Kit PedalX - CATEGORIA PRÓ - 60 km"},
+        "tables": [
+            {"title": "RESUMO POR PROVA", "row_col": "B",
+             "rows": [("XCO", "*XCO*"), ("Categoria Pró - 60 km", "*60 km*")],
+             "columns": _SEXO_COLUMNS},
+            {"title": "INSCRITOS POR CATEGORIA E PROVA", "row_col": "C",
+             "columns": [{"header": "XCO", "criteria": [("B", "*XCO*")]},
+                         {"header": "Pró 60 km", "criteria": [("B", "*60 km*")]}],
+             "rows": [
+                 ('CADETE - 25 a 39 | Masc', 'CADETE  - 25 a 39 | Masc'),
+                 ('CADETE - 25a 39 | Fem', 'CADETE  - 25a 39| Fem'),
+                 ('E-BIKE - 19 ou mais | Masc', 'E-BIKE - 19 ou mais | Masc'),
+                 ('E-BIKE - 19 ou mais | Fem', 'E-BIKE - 19 ou mais | Fem'),
+                 ('ELITE - Idade livre | Masc', 'ELITE - Idade livre | Masc'),
+                 ('ELITE - Idade livre | Fem', 'ELITE - Idade livre | Fem'),
+                 ('ESTREANTE - 12 ou mais | Masc', 'ESTREANTE - 12ou mais | Masc'),
+                 ('ESTREANTE - 12 ou mais | Fem', 'ESTREANTE - 12 ou mais | Fem'),
+                 ('EXPERT - 16 a 24 | Masc', 'EXPERT - 16 a 24| Masc'),
+                 ('EXPERT - 16 a 24 | Fem', 'EXPERT - 16 a 24| Fem'),
+                 ('SENIOR - 40 a 49 | Masc', 'SENIOR - 40a 49 | Masc'),
+                 ('SENIOR - 40 a 49 | Fem', 'SENIOR - 40a 49 | Fem'),
+                 ('VETERANO - 50 ou mais | Masc', 'VETERANO - 50 ou mais| Masc'),
+                 ('VETERANO - 50 ou mais | Fem', 'VETERANO - 50 ou mais | Fem'),
+                 ('Junior - 16 a 18 | Masc', 'Junior - 16 a 18 | Masc'),
+                 ('Junior - 16 a 18 | Fem', 'Junior - 16 a 18 | Fem'),
+                 ('Master A1 - 30 a 34 | Masc', 'Master A1 - 30 a 34 | Masc'),
+                 ('Master A1 - 30 a 34 | Fem', 'Master A1 - 30 a 34 | Fem'),
+                 ('Master A2 - 35 a 39 | Masc', 'Master A2 - 35 A 39 | Masc'),
+                 ('Master A2 - 35 a 39 | Fem', 'Master A2 - 35 A 39 | Fem'),
+                 ('Master B1 - 40 a 44 | Masc', 'Master B1 - 40 a 44 | Masc'),
+                 ('Master B1 - 40 a 44 | Fem', 'Master B1 - 40 a 44 | Fem'),
+                 ('Master B2 - 45 a 49 | Masc', 'Master B2 - 45 a 49 | Masc'),
+                 ('Master B2 - 45 a 49 | Fem', 'Master B2 - 45 a 49 | Fem'),
+                 ('Master C1 - 50 a 55 | Masc', 'Master C1 - 50 a 55 | Masc'),
+                 ('Master C1 - 50 a 55 | Fem', 'Master C1 - 50 a 55 | Fem'),
+                 ('Master C2 - 55 a 59 | Masc', 'Master C2 - 55 a 59 | Masc'),
+                 ('Master C2 - 55 a 59 | Fem', 'Master C2 - 55 a 59 | Fem'),
+                 ('Master D1 - 60 a 64 | Masc', 'Master D1 - 60 a 64 | Masc'),
+                 ('Master D1 - 60 a 64 | Fem', 'Master D1 - 60 a 64 | Fem'),
+                 ('Master D2 - 65 + | Masc', 'Master D2 - 65 + | Masc'),
+                 ('Master D2 - 65 + | Fem', 'Master D2 - 65 + | Fem'),
+                 ('Open - Idade livre | Masc', 'Open - Idade livre | Masc'),
+                 ('Open - Idade livre | Fem', 'Open - Idade livre | Fem'),
+                 ('Sub 23 - 19 a 22 | Masc', 'Sub 23  - 19 a 22 | Masc'),
+                 ('Sub 23 - 19 a 22 | Fem', 'Sub 23  - 19 a 22 | Fem'),
+                 ('Sub 30 - 23 a 29 | Masc', 'Sub 30 - 23 a 29 | Masc'),
+                 ('Sub 30 - 23 a 29 | Fem', 'Sub 30 - 23 a 29 | Fem'),
+             ]},
+        ],
+    },
+    "pedalx_canastra": {
+        "label": "Serra da Canastra", "raw_tab": "raw_inscritos_pedalx_canastra",
+        "dash_tab": "Pedal X Canastra", "has_nubank": True,
+        "title": "PEDAL X MTB — SERRA DA CANASTRA",
+        "coupon_buckets": PEDAL_COUPON_BUCKETS,
+        "timestamp_cell": "F2", "protected_titles": PROTECTED_TITLES,
+        "allowed_dash_tabs": {"Pedal X Canastra"},
+        "accepted_statuses": {"Pago", "Cortesia"},
+        # "CATEGORIA SPORT - 30 km " chega com espaco no fim — literal de proposito.
+        "expected_categorias": {"CATEGORIA SPORT - 30 km ", "CATEGORIA PRÓ - 60 km"},
+        "tables": [
+            {"title": "RESUMO POR PROVA", "row_col": "B",
+             "rows": [("Sport - 30 km", "*30 km*"), ("Pró - 60 km", "*60 km*")],
+             "columns": _SEXO_COLUMNS},
+            {"title": "INSCRITOS POR CATEGORIA E PROVA", "row_col": "C",
+             "columns": [{"header": "Sport 30 km", "criteria": [("B", "*30 km*")]},
+                         {"header": "Pró 60 km", "criteria": [("B", "*60 km*")]}],
+             "rows": [
+                 ('Junior - 16 a 18 | Masc', 'Junior - 16 a 18 | Masc'),
+                 ('Junior - 16 a 18 | Fem', 'Junior - 16 a 18 | Fem'),
+                 ('Master A1 - 30 a 34 | Masc', 'Master A1 - 30 a 34 | Masc'),
+                 ('Master A1 - 30 a 34 | Fem', 'Master A1 - 30 a 34 | Fem'),
+                 ('Master A2 - 35 a 39 | Masc', 'Master A2 - 35 A 39 | Masc'),
+                 ('Master A2 - 35 a 39 | Fem', 'Master A2 - 35 A 39 | Fem'),
+                 ('Master B1 - 40 a 44 | Masc', 'Master B1 - 40 a 44 | Masc'),
+                 ('Master B1 - 40 a 44 | Fem', 'Master B1 - 40 a 44 | Fem'),
+                 ('Master B2 - 45 a 49 | Masc', 'Master B2 - 45 a 49 | Masc'),
+                 ('Master B2 - 45 a 49 | Fem', 'Master B2 - 45 a 49 | Fem'),
+                 ('Master C1 - 50 a 55 | Masc', 'Master C1 - 50 a 55 | Masc'),
+                 ('Master C1 - 50 a 55 | Fem', 'Master C1 - 50 a 55 | Fem'),
+                 ('Master C2 - 55 a 59 | Masc', 'Master C2 - 55 a 59 | Masc'),
+                 ('Master C2 - 55 a 59 | Fem', 'Master C2 - 55 a 59 | Fem'),
+                 ('Master D1 - 60 a 64 | Masc', 'Master D1 - 60 a 64 | Masc'),
+                 ('Master D1 - 60 a 64 | Fem', 'Master D1 - 60 a 64 | Fem'),
+                 ('Master D2 - 65 + | Masc', 'Master D2 - 65 + | Masc'),
+                 ('Master D2 - 65 + | Fem', 'Master D2 - 65 + | Fem'),
+                 ('Open - Idade livre | Masc', 'Open - Idade livre | Masc'),
+                 ('Open - Idade livre | Fem', 'Open - Idade livre | Fem'),
+                 ('Sub 23 - 19 a 22 | Masc', 'Sub 23  - 19 a 22 | Masc'),
+                 ('Sub 23 - 19 a 22 | Fem', 'Sub 23  - 19 a 22 | Fem'),
+                 ('Sub 30 - 23 a 29 | Masc', 'Sub 30 - 23 a 29 | Masc'),
+                 ('Sub 30 - 23 a 29 | Fem', 'Sub 30 - 23 a 29 | Fem'),
+             ]},
+        ],
+    },
 }
+# As modalidades esperadas na raw sao exatamente os criterios da tabela detalhada.
+for _key in ("pedalx_manaus", "pedalx_canastra"):
+    DASHBOARD_CONFIGS[_key]["expected_modalidades"] = {
+        criterio for _, criterio in DASHBOARD_CONFIGS[_key]["tables"][1]["rows"]
+    }
 
 
 def _column_letter(index):
@@ -475,14 +608,23 @@ def _dimension(sid, dimension, start, end, size):
     }}
 
 
-def _validate_custom(sh, raw_tab, dash_tab, modalidades, kit_columns,
+def _validate_custom(sh, raw_tab, dash_tab, tables,
                      coupon_buckets, timestamp_cell, protected_titles,
                      allowed_dash_tabs, expected_modalidades,
                      expected_categorias, accepted_statuses):
-    if not modalidades or not all(len(item) == 2 for item in modalidades):
-        raise ValueError("modalidades deve conter pares (label, valor exato)")
-    if not kit_columns:
-        raise ValueError("kit_columns não pode ser vazio")
+    if not tables:
+        raise ValueError("é preciso ao menos uma tabela")
+    for table in tables:
+        rows, columns = table.get("rows"), table.get("columns")
+        if not rows or not all(len(item) == 2 for item in rows):
+            raise ValueError(f"rows deve conter pares (label, criterio): {table.get('title')}")
+        if not columns:
+            raise ValueError(f"columns não pode ser vazio: {table.get('title')}")
+        if table.get("row_col", "C") not in set("ABCDEFGHIJKLMN"):
+            raise ValueError(f"row_col inválido: {table.get('row_col')}")
+        # A coluna I é o spacer lateral do layout; estourar nela quebraria o desenho.
+        if 3 + len(columns) > 8:
+            raise ValueError(f"máximo de 5 colunas por tabela: {table.get('title')}")
     residuals = [i for i, item in enumerate(coupon_buckets or ()) if item.get("residual")]
     if residuals != [len(coupon_buckets) - 1]:
         raise ValueError("coupon_buckets exige um residual na última posição")
@@ -491,7 +633,8 @@ def _validate_custom(sh, raw_tab, dash_tab, modalidades, kit_columns,
         raise ValueError(f"dashboard protegido ou inválido: {dash_tab}")
     if not re.fullmatch(r"[A-Z]+[1-9][0-9]*", timestamp_cell):
         raise ValueError(f"timestamp_cell inválida: {timestamp_cell}")
-    for spec in list(kit_columns) + [x for x in coupon_buckets if not x.get("residual")]:
+    specs = [spec for table in tables for spec in table["columns"]]
+    for spec in specs + [x for x in coupon_buckets if not x.get("residual")]:
         criteria = spec.get("criteria")
         if not criteria or any(col not in set("ABCDEFGHIJKLMN") for col, _ in criteria):
             raise ValueError(f"criteria inválido: {spec}")
@@ -506,33 +649,51 @@ def _validate_custom(sh, raw_tab, dash_tab, modalidades, kit_columns,
     if not values or values[0][:6] != expected_header:
         raise ValueError(f"header inesperado em {raw_tab}")
     rows = [row + [""] * (6 - len(row)) for row in values[1:] if any(row)]
-    observed_modalidades = {row[2] for row in rows if row[2]}
-    observed_categorias = {row[1] for row in rows if row[1]}
-    observed_statuses = {row[4] for row in rows if row[4]}
+
+    # Normaliza os dois lados: titulos da TicketSports chegam com espaco sobrando
+    # (ex.: "CATEGORIA SPORT - 30 km ") e o Sheets pode aparar na ida/volta.
+    def _norm(values_iter):
+        return {str(v).strip() for v in values_iter if str(v).strip()}
+
     checks = (
-        ("modalidades", observed_modalidades, set(expected_modalidades or ())),
-        ("categorias", observed_categorias, set(expected_categorias or ())),
-        ("status", observed_statuses, set(accepted_statuses or ())),
+        ("modalidades", _norm(row[2] for row in rows), _norm(expected_modalidades or ())),
+        ("categorias", _norm(row[1] for row in rows), _norm(expected_categorias or ())),
+        ("status", _norm(row[4] for row in rows), _norm(accepted_statuses or ())),
     )
     for label, observed, allowed in checks:
         if not observed or not observed.issubset(allowed):
-            raise ValueError(f"raw {label} fora do contrato: {sorted(observed)}")
+            raise ValueError(
+                f"raw {label} fora do contrato: {sorted(observed - allowed)} "
+                f"(observado={sorted(observed)})"
+            )
 
 
 def _build_custom_dashboard(sh, label, raw_tab, dash_tab, has_nubank, modalidades, *,
                             title, breakdown_title, kit_columns, coupon_buckets,
                             timestamp_cell, protected_titles, allowed_dash_tabs,
                             expected_modalidades, expected_categorias,
-                            accepted_statuses):
-    _validate_custom(sh, raw_tab, dash_tab, modalidades, kit_columns,
+                            accepted_statuses, tables=None):
+    # Forma antiga (uma tabela so) normalizada para a forma nova, para manter as configs
+    # existentes identicas sem duplicar o desenho.
+    if tables is None:
+        tables = [{"title": breakdown_title, "row_col": "C",
+                   "rows": modalidades, "columns": kit_columns}]
+    _validate_custom(sh, raw_tab, dash_tab, tables,
                      coupon_buckets, timestamp_cell, protected_titles,
                      allowed_dash_tabs, expected_modalidades,
                      expected_categorias, accepted_statuses)
-    n = len(modalidades)
-    total_col = 3 + len(kit_columns)
-    r_start, r_end = 9, 8 + n
-    r_total, r_cup_sec, r_cup_hdr = r_end + 1, r_end + 3, r_end + 4
-    r_cup_start = r_end + 5
+    # Layout: cada tabela ocupa secao + header + N linhas + total, com 1 linha em branco
+    # entre elas. A secao de cupons vem depois de todas.
+    layouts, cursor = [], 7
+    for table in tables:
+        r_data = cursor + 2
+        r_last = r_data + len(table["rows"]) - 1
+        layouts.append({"table": table, "sec": cursor, "hdr": cursor + 1,
+                        "start": r_data, "end": r_last, "total": r_last + 1,
+                        "total_col": 3 + len(table["columns"])})
+        cursor = r_last + 3
+    r_cup_sec, r_cup_hdr = cursor, cursor + 1
+    r_cup_start = cursor + 2
     r_cup_end = r_cup_start + len(coupon_buckets) - 1
     r_cup_total, r_footer, r_max = r_cup_end + 1, r_cup_end + 3, r_cup_end + 5
     try:
@@ -567,29 +728,34 @@ def _build_custom_dashboard(sh, label, raw_tab, dash_tab, has_nubank, modalidade
         {"range": "D5", "values": [[f'=COUNTIF({raw}!D:D;"F")&"  ("&TEXTO(IFERROR(COUNTIF({raw}!D:D;"F")/({total});0);"0%")&")"']]},
         {"range": "F4", "values": [["MASCULINO"]]},
         {"range": "F5", "values": [[f'=COUNTIF({raw}!D:D;"M")&"  ("&TEXTO(IFERROR(COUNTIF({raw}!D:D;"M")/({total});0);"0%")&")"']]},
-        {"range": "B7", "values": [[breakdown_title]]},
-        {"range": f"B8:{_column_letter(total_col)}8",
-         "values": [[""] + [x["header"] for x in kit_columns] + ["Total"]]},
     ]
     if has_nubank:
         cells += [
             {"range": "H4", "values": [["% CUPOM NUBANK"]]},
             {"range": "H5", "values": [[f'=TEXTO(IFERROR(COUNTIF({raw}!F:F;"*NUBANK*")/({total});0);"0%")']]},
         ]
-    for offset, (display, exact) in enumerate(modalidades):
-        row = r_start + offset
-        cells.append({"range": f"B{row}", "values": [[display]]})
-        for kit_offset, spec in enumerate(kit_columns):
-            col = 3 + kit_offset
-            cells.append({"range": f"{_column_letter(col)}{row}",
-                          "values": [[_countifs(raw, [("C", exact)] + spec["criteria"])]]})
-        cells.append({"range": f"{_column_letter(total_col)}{row}",
-                      "values": [[f"=SOMA(C{row}:{_column_letter(total_col - 1)}{row})"]]})
-    cells.append({"range": f"B{r_total}", "values": [["Total"]]})
-    for col in range(3, total_col + 1):
-        letter = _column_letter(col)
-        cells.append({"range": f"{letter}{r_total}",
-                      "values": [[f"=SOMA({letter}{r_start}:{letter}{r_end})"]]})
+    for lay in layouts:
+        table, total_col = lay["table"], lay["total_col"]
+        row_col = table.get("row_col", "C")
+        cells += [
+            {"range": f"B{lay['sec']}", "values": [[table["title"]]]},
+            {"range": f"B{lay['hdr']}:{_column_letter(total_col)}{lay['hdr']}",
+             "values": [[""] + [x["header"] for x in table["columns"]] + ["Total"]]},
+        ]
+        for offset, (display, criterio) in enumerate(table["rows"]):
+            row = lay["start"] + offset
+            cells.append({"range": f"B{row}", "values": [[display]]})
+            for col_offset, spec in enumerate(table["columns"]):
+                col = 3 + col_offset
+                cells.append({"range": f"{_column_letter(col)}{row}",
+                              "values": [[_countifs(raw, [(row_col, criterio)] + spec["criteria"])]]})
+            cells.append({"range": f"{_column_letter(total_col)}{row}",
+                          "values": [[f"=SOMA(C{row}:{_column_letter(total_col - 1)}{row})"]]})
+        cells.append({"range": f"B{lay['total']}", "values": [["Total"]]})
+        for col in range(3, total_col + 1):
+            letter = _column_letter(col)
+            cells.append({"range": f"{letter}{lay['total']}",
+                          "values": [[f"=SOMA({letter}{lay['start']}:{letter}{lay['end']})"]]})
     cells += [
         {"range": f"B{r_cup_sec}", "values": [["INSCRIÇÕES POR TIPO DE CUPOM"]]},
         {"range": f"B{r_cup_hdr}:D{r_cup_hdr}", "values": [["Tipo", "Qtd", "%"]]},
@@ -635,18 +801,22 @@ def _build_custom_dashboard(sh, label, raw_tab, dash_tab, has_nubank, modalidade
             _fmt(sid, 5, c1, 5, c2, fg=color, bold=True, size=size,
                  halign="CENTER", valign="MIDDLE"),
         ]
+    for lay in layouts:
+        total_col = lay["total_col"]
+        reqs += [
+            _merge(sid, lay["sec"], 2, lay["sec"], 8),
+            _fmt(sid, lay["sec"], 2, lay["sec"], 8, bg=LARANJA_500, fg=BRANCO, bold=True,
+                 size=11, halign="LEFT", valign="MIDDLE"),
+            _fmt(sid, lay["hdr"], 2, lay["hdr"], total_col, bg=LARANJA_50, fg=LARANJA_500,
+                 bold=True, size=10, halign="CENTER", valign="MIDDLE", borders=BORDA_HEADER),
+            _fmt(sid, lay["start"], 2, lay["end"], 2, fg=CINZA_TEXTO, bold=True, size=11,
+                 halign="LEFT", valign="MIDDLE"),
+            _fmt(sid, lay["start"], 3, lay["end"], total_col, fg=CINZA_TEXTO, size=11,
+                 halign="CENTER", valign="MIDDLE"),
+            _fmt(sid, lay["total"], 2, lay["total"], total_col, bg=LARANJA_50, fg=LARANJA_500,
+                 bold=True, size=11, halign="CENTER", valign="MIDDLE", borders=BORDA_TOTAL),
+        ]
     reqs += [
-        _merge(sid, 7, 2, 7, 8),
-        _fmt(sid, 7, 2, 7, 8, bg=LARANJA_500, fg=BRANCO, bold=True, size=11,
-             halign="LEFT", valign="MIDDLE"),
-        _fmt(sid, 8, 2, 8, total_col, bg=LARANJA_50, fg=LARANJA_500, bold=True,
-             size=10, halign="CENTER", valign="MIDDLE", borders=BORDA_HEADER),
-        _fmt(sid, r_start, 2, r_end, 2, fg=CINZA_TEXTO, bold=True, size=11,
-             halign="LEFT", valign="MIDDLE"),
-        _fmt(sid, r_start, 3, r_end, total_col, fg=CINZA_TEXTO, size=11,
-             halign="CENTER", valign="MIDDLE"),
-        _fmt(sid, r_total, 2, r_total, total_col, bg=LARANJA_50, fg=LARANJA_500,
-             bold=True, size=11, halign="CENTER", valign="MIDDLE", borders=BORDA_TOTAL),
         _merge(sid, r_cup_sec, 2, r_cup_sec, 8),
         _fmt(sid, r_cup_sec, 2, r_cup_sec, 8, bg=LARANJA_500, fg=BRANCO, bold=True,
              size=11, halign="LEFT", valign="MIDDLE"),
@@ -670,14 +840,14 @@ def build_dashboard(sh, label, raw_tab, dash_tab, has_nubank=True, modalidades=N
                     title=None, breakdown_title=None, kit_columns=None,
                     coupon_buckets=None, timestamp_cell="C2", protected_titles=None,
                     allowed_dash_tabs=None, expected_modalidades=None,
-                    expected_categorias=None, accepted_statuses=None):
+                    expected_categorias=None, accepted_statuses=None, tables=None):
     custom = any(x is not None for x in
-                 (title, breakdown_title, kit_columns, coupon_buckets)) or timestamp_cell != "C2"
+                 (title, breakdown_title, kit_columns, coupon_buckets, tables)) or timestamp_cell != "C2"
     if not custom:
         return _build_legacy_dashboard(sh, label, raw_tab, dash_tab,
                                        has_nubank=has_nubank, modalidades=modalidades)
     return _build_custom_dashboard(
-        sh, label, raw_tab, dash_tab, has_nubank, modalidades,
+        sh, label, raw_tab, dash_tab, has_nubank, modalidades, tables=tables,
         title=title, breakdown_title=breakdown_title, kit_columns=kit_columns,
         coupon_buckets=coupon_buckets, timestamp_cell=timestamp_cell,
         protected_titles=protected_titles, allowed_dash_tabs=allowed_dash_tabs,

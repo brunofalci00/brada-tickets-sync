@@ -41,13 +41,34 @@ class SyncPedalXTests(unittest.TestCase):
         self.event = next(event for event in sync.EVENTS if event["key"] == "pedalx")
 
     def test_configuration_is_appended_and_isolated_from_metas(self):
-        self.assertEqual([e["key"] for e in sync.EVENTS], ["bsb", "bh", "ssa", "pedalx"])
+        self.assertEqual([e["key"] for e in sync.EVENTS],
+                         ["bsb", "bh", "ssa", "pedalx", "pedalx_manaus", "pedalx_canastra"])
         self.assertEqual(self.event["id"], 87735)
         self.assertEqual(self.event["raw_tab"], "raw_inscritos_pedalx")
         self.assertEqual(self.event["dash_tab"], "Pedal X Road")
         self.assertEqual(self.event["timestamp_cell"], "F2")
         self.assertTrue(self.event["non_blocking"])
         self.assertNotIn(87735, sync.METAS_TABS)
+
+    def test_pedal_events_are_isolated_and_never_email(self):
+        """Os 3 pedais: fora das metas, non_blocking, e sem regua de e-mail.
+
+        O secret de sequencia nao existe -> sync_to_leadlovers retorna cedo. Se alguem
+        criar LL_SEQUENCE_PEDALX*, comeca a disparar e-mail sem querer.
+        """
+        pedais = [e for e in sync.EVENTS if e["key"].startswith("pedalx")]
+        self.assertEqual(len(pedais), 3)
+        for event in pedais:
+            with self.subTest(event=event["key"]):
+                self.assertTrue(event["non_blocking"])
+                self.assertEqual(event["timestamp_cell"], "F2")
+                self.assertNotIn(event["id"], sync.METAS_TABS)
+                self.assertNotIn(event["id"], sync.METAS_TABS_NATIVE)
+                self.assertEqual(os.environ.get(event["ll_sequence_env"], ""), "")
+        ids = {e["id"] for e in pedais}
+        self.assertEqual(ids, {87735, 87732, 87727})
+        tabs = [e["raw_tab"] for e in pedais] + [e["dash_tab"] for e in pedais]
+        self.assertEqual(len(tabs), len(set(tabs)), "abas de pedal nao podem colidir")
 
     def test_empty_api_response_fails_before_worksheet_access(self):
         sh = FakeSpreadsheet()

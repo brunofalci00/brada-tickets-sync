@@ -90,7 +90,48 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Pedal X", serialized)
         self.assertIn("Sem cupom", serialized)
         self.assertIn("=COUNTA(raw_inscritos_pedalx!A:A)-1-SOMA(C", serialized)
-        self.assertNotIn("NUBANK", serialized.upper())
+        # Nubank e patrocinador e vende nos 3 pedais: KPI + balde proprio.
+        # Antes caia em "Outros" e sumia do dashboard.
+        self.assertIn("% CUPOM NUBANK", serialized)
+        for balde in ("Nubank", "Federação", "Assessoria", "Cortesia"):
+            self.assertIn(balde, serialized)
+
+    def test_mtb_layout_has_summary_then_detail(self):
+        """MTB: bloco resumo por prova + tabela detalhada por categoria etaria."""
+        for key, n_linhas, prova in (("pedalx_manaus", 38, "XCO"),
+                                     ("pedalx_canastra", 24, "Sport 30 km")):
+            with self.subTest(key=key):
+                config = dashboard.DASHBOARD_CONFIGS[key]
+                cat = sorted(config["expected_categorias"])[0]
+                mod = config["tables"][1]["rows"][0][1]
+                raw = [RAW_HEADER, ["1", cat, mod, "M", "Pago", ""]]
+                sh = FakeSpreadsheet(raw, dashboard_exists=False)
+                dashboard._run_config(sh, key)
+                cells = sh.dash.calls[0]
+                by_range = {c["range"]: c["values"][0][0] for c in cells}
+                # Resumo comeca em B7 (secao), B8 (header), B9/B10 (2 provas), B11 (Total).
+                self.assertEqual(by_range["B7"], "RESUMO POR PROVA")
+                self.assertEqual(by_range["B11"], "Total")
+                # Detalhada logo abaixo, com uma linha por categoria etaria.
+                self.assertEqual(by_range["B13"], "INSCRITOS POR CATEGORIA E PROVA")
+                self.assertEqual(by_range[f"B{15 + n_linhas}"], "Total")
+                serialized = json.dumps(cells, ensure_ascii=False)
+                self.assertIn(prova, serialized)
+                self.assertIn("Masculino", serialized)
+                # Criterio literal (typo da TicketSports preservado no COUNTIFS).
+                self.assertIn(mod, serialized)
+
+    def test_mtb_rows_cover_every_modalidade_da_api(self):
+        """Toda modalidade esperada na raw tem linha na tabela detalhada.
+
+        Se faltar, a venda daquela categoria fica invisivel no dashboard.
+        """
+        for key in ("pedalx_manaus", "pedalx_canastra"):
+            with self.subTest(key=key):
+                config = dashboard.DASHBOARD_CONFIGS[key]
+                criterios = [c for _, c in config["tables"][1]["rows"]]
+                self.assertEqual(set(criterios), set(config["expected_modalidades"]))
+                self.assertEqual(len(criterios), len(set(criterios)), "linha duplicada")
 
     def test_raw_missing_fails_before_creation_or_clear(self):
         sh = FakeSpreadsheet(raw_values=None, dashboard_exists=False)

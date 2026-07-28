@@ -68,6 +68,34 @@ EVENTS = [
         "expected_modalidades": {"Inscreva-se"},
         "expected_categorias": {"Pedal X"},
     },
+    # MTBs. ll_sequence_env aponta para secrets que NAO existem: sem regua de e-mail
+    # nessas etapas (sync_to_leadlovers retorna cedo quando a variavel esta vazia).
+    # expected_* fica so no builder, que tem a lista completa de categorias etarias;
+    # aqui ficam vazios para nao duplicar 38 strings em dois lugares.
+    {
+        "key": "pedalx_manaus",
+        "id": 87732,
+        "label": "Pedal X MTB — Manaus",
+        "raw_tab": "raw_inscritos_pedalx_manaus",
+        "dash_tab": "Pedal X Manaus",
+        "ll_sequence_env": "LL_SEQUENCE_PEDALX_MANAUS",
+        "ll_sent_tab": "Etapa Pedal X Manaus",
+        "timestamp_cell": "F2",
+        "non_blocking": True,
+        "expected_categorias": {"Kit PedalX - XCO", "Kit PedalX - CATEGORIA PRÓ - 60 km"},
+    },
+    {
+        "key": "pedalx_canastra",
+        "id": 87727,
+        "label": "Pedal X MTB — Serra da Canastra",
+        "raw_tab": "raw_inscritos_pedalx_canastra",
+        "dash_tab": "Pedal X Canastra",
+        "ll_sequence_env": "LL_SEQUENCE_PEDALX_CANASTRA",
+        "ll_sent_tab": "Etapa Pedal X Canastra",
+        "timestamp_cell": "F2",
+        "non_blocking": True,
+        "expected_categorias": {"CATEGORIA SPORT - 30 km ", "CATEGORIA PRÓ - 60 km"},
+    },
 ]
 
 # Credenciais via variáveis de ambiente (GitHub Secrets) ou arquivo local
@@ -1057,7 +1085,16 @@ def sync_metas(participants_por_cidade):
 # ===================================================
 
 def check_event_schema(participants, event):
-    """Alerta quando surgem modalidade/categoria fora do contrato conhecido."""
+    """Alerta quando surge modalidade/categoria FORA do contrato conhecido.
+
+    So o excedente e alertado. Contrato sem venda ainda ("missing") e o estado normal de
+    loja recem-aberta — um MTB abre com dezenas de categorias etarias e quase nenhuma
+    vendida —, entao alertar nisso viraria ruido de hora em hora. O sinal acionavel e o
+    inverso: valor novo que o dashboard nao tem linha para contar, logo venda invisivel.
+
+    Compara com os dois lados normalizados: a TicketSports entrega titulos com espaco
+    sobrando (ex.: "CATEGORIA SPORT - 30 km ") e o contrato copia esse literal.
+    """
     checks = (
         ("modalidades", "modalidade", event.get("expected_modalidades")),
         ("categorias", "categoria", event.get("expected_categorias")),
@@ -1067,14 +1104,13 @@ def check_event_schema(participants, event):
         if not expected:
             continue
         observed = {str(p.get(field, "")).strip() for p in participants if p.get(field)}
-        expected = set(expected)
-        if observed != expected:
-            missing = expected - observed
-            unexpected = observed - expected
-            warnings.append((label, {"missing": missing, "unexpected": unexpected}))
+        expected = {str(x).strip() for x in expected}
+        unexpected = observed - expected
+        if unexpected:
+            warnings.append((label, {"missing": expected - observed, "unexpected": unexpected}))
             print(
-                f"  [SCHEMA WARNING] {event['label']}: {label} divergentes; "
-                f"observado={sorted(observed)!r}, esperado={sorted(expected)!r}"
+                f"  [SCHEMA WARNING] {event['label']}: {label} fora do contrato; "
+                f"inesperado={sorted(unexpected)!r}, esperado={sorted(expected)!r}"
             )
     return warnings
 
