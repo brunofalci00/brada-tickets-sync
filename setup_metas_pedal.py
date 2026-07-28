@@ -23,9 +23,11 @@ protegida, sem precisar manter lista fixa.
 Aba existente NAO e sobrescrita sem --force: a coluna C (Meta) e editavel pela Tamyris e
 pelo Gui, e recriar por engano apagaria o ajuste.
 
-REGUA SEMANAL: derivada de (1a venda -> vespera do evento), 7 dias por semana, ultima semana
-podendo ser curta. A API da TicketSports NAO expoe janela de vendas (nao ha dataInicioVendas/
-dataFimVendas em GET /Event/{id}, nem no HTML da pagina publica) — dai as datas virem daqui.
+REGUA SEMANAL: de (1a venda -> ultimo dia de venda), 7 dias por semana, ultima podendo ser curta.
+`GET /Event/{id}` nao expoe a janela de vendas (nao ha dataInicioVendas/dataFimVendas), MAS a
+pagina publica da loja renderiza "Inscrições até DD/MM/AAAA" — o campo existe, so nao vem pela
+API. O prazo real fica em `fim` na CONFIGS abaixo; nao derivar da data do evento (medido em
+28/07: as 3 lojas fecham ~6 dias antes, nao na vespera).
 
 LOCALE (provado por probe 22/06): a planilha parseia formula em pt_BR -> separador de
 argumento e ';' (virgula da #ERROR). Vale para SUMIF/IF/OR/AND. Formulas sem separador
@@ -72,26 +74,32 @@ WIDTHS = {"A": 164, "B": 117, "C": 131, "D": 89, "E": 89, "F": 75, "G": 96, "H":
 HEADERS = ["Semana", "Período", "Meta", "Acumulado", "Realizado", "Gap",
            "Real. Básico", "Real. Premium", "Real. Combo", "Real. PCD", "Real. Gratuito"]
 
+# `inicio`  = data da 1a venda real, apurada em GET /Order/List.
+# `fim`     = ULTIMO DIA DE VENDA. Nao e derivado da data do evento: e o "Inscrições até" que a
+#             pagina publica da loja exibe, lido em 28/07. `GET /Event/{id}` nao traz esse campo,
+#             mas a pagina renderizada traz — e as tres fecham ~6 dias antes do evento, nao na
+#             vespera. Se o prazo mudar no painel, atualizar aqui.
+# `evento`  = so referencia; nao entra no calculo da regua.
 CONFIGS = {
     "pedalx_road": {
         "event_id": 87735, "tab": "Metas Pedal Road", "sigla": "Pedal Road",
-        "inicio": date(2026, 7, 21), "evento": date(2026, 8, 30),
+        "inicio": date(2026, 7, 21), "fim": date(2026, 8, 23), "evento": date(2026, 8, 30),
     },
     "pedalx_manaus": {
         "event_id": 87732, "tab": "Metas Pedal Manaus", "sigla": "Pedal Manaus",
-        "inicio": date(2026, 7, 27), "evento": date(2026, 9, 19),
+        "inicio": date(2026, 7, 27), "fim": date(2026, 9, 13), "evento": date(2026, 9, 19),
     },
     "pedalx_canastra": {
         "event_id": 87727, "tab": "Metas Pedal Canastra", "sigla": "Pedal Canastra",
-        "inicio": date(2026, 7, 24), "evento": date(2026, 10, 17),
+        "inicio": date(2026, 7, 24), "fim": date(2026, 10, 12), "evento": date(2026, 10, 17),
     },
 }
 
 
 # ----------------------------- regua semanal -----------------------------
 
-def semanas(inicio, evento, meta_total=META_TOTAL):
-    """[(rotulo, 'DD/MM - DD/MM', meta), ...] de `inicio` ate a vespera de `evento`.
+def semanas(inicio, fim, meta_total=META_TOTAL):
+    """[(rotulo, 'DD/MM - DD/MM', meta), ...] de `inicio` ate `fim` (ultimo dia de venda).
 
     Semanas de 7 dias; a ultima pode ser curta. Os limites se sobrepoem de proposito
     ('21/07 - 28/07' seguido de '28/07 - 04/08'), como nas corridas: o corte e cumulativo
@@ -100,7 +108,6 @@ def semanas(inicio, evento, meta_total=META_TOTAL):
 
     Meta dividida por igual, com o resto nas primeiras semanas para a soma fechar exata.
     """
-    fim = evento - timedelta(days=1)
     if fim <= inicio:
         raise ValueError(f"janela invalida: inicio {inicio} >= fim {fim}")
     bounds = [inicio]
@@ -173,7 +180,7 @@ def _put(grid, row, col_letter, cd):
 def build_layout(cfg):
     """Monta (grid, marcos) da aba. `marcos` traz as linhas 1-based que o painel e a
     formatacao condicional precisam referenciar."""
-    linhas = semanas(cfg["inicio"], cfg["evento"])
+    linhas = semanas(cfg["inicio"], cfg["fim"])
     n = len(linhas)
 
     r_wk0, r_wkN = 2, n + 1
@@ -374,7 +381,7 @@ def main(keys, dry=False, force=False):
         for key in keys:
             cfg = CONFIGS[key]
             _grid, m = build_layout(cfg)
-            linhas = semanas(cfg["inicio"], cfg["evento"])
+            linhas = semanas(cfg["inicio"], cfg["fim"])
             req, _ = build_requests(-1, cfg)
             print(f'[DRY] {cfg["tab"]}: {m["n"]} semanas, {len(req)} requests, '
                   f'ultima linha {m["last"]}, soma das metas {sum(x[2] for x in linhas)}')

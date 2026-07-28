@@ -211,19 +211,20 @@ chk("nat_C_only_grat", all(s == "C10" for s in _starts if s[0] == "C"), True)  #
 import setup_metas_pedal as SP  # noqa: E402
 
 # --- regua semanal derivada (1a venda -> vespera do evento) ---
-_reguas = {k: SP.semanas(c["inicio"], c["evento"]) for k, c in SP.CONFIGS.items()}
+_reguas = {k: SP.semanas(c["inicio"], c["fim"]) for k, c in SP.CONFIGS.items()}
 for _k, _r in _reguas.items():
     chk(f"pedal_soma_500_{_k}", sum(m for _, _, m in _r), SP.META_TOTAL)
     chk(f"pedal_sem_periodo_dup_{_k}", len({p for _, p, _ in _r}), len(_r))
-chk("pedal_n_road", len(_reguas["pedalx_road"]), 6)
-chk("pedal_n_manaus", len(_reguas["pedalx_manaus"]), 8)
+chk("pedal_n_road", len(_reguas["pedalx_road"]), 5)
+chk("pedal_n_manaus", len(_reguas["pedalx_manaus"]), 7)
 chk("pedal_n_canastra", len(_reguas["pedalx_canastra"]), 12)
-# ultima semana pode ser curta e termina na VESPERA do evento (Road: evento 30/08)
-chk("pedal_ultima_semana_road", _reguas["pedalx_road"][-1][1], "25/08 - 29/08")
+# ultima semana pode ser curta e termina no ULTIMO DIA DE VENDA lido no site,
+# nao na vespera do evento (Road: vende ate 23/08, evento so em 30/08)
+chk("pedal_ultima_semana_road", _reguas["pedalx_road"][-1][1], "18/08 - 23/08")
 # limites se sobrepoem de proposito: o fim de uma semana e o inicio da seguinte
 chk("pedal_bordas_encaixam",
     all(_reguas["pedalx_road"][i][1].split(" - ")[1] == _reguas["pedalx_road"][i + 1][1].split(" - ")[0]
-        for i in range(5)), True)
+        for i in range(4)), True)
 # janela invalida deve estourar, nao gerar regua vazia
 try:
     SP.semanas(date(2026, 8, 30), date(2026, 8, 30))
@@ -251,7 +252,7 @@ chk("pedal_zebra_nunca_em_E", _bg(2, "E"), None)
 chk("pedal_zebra_nunca_em_F", _bg(2, "F"), None)
 chk("pedal_sem_zebra_impar", _bg(3, "C"), None)
 chk("pedal_acum_primeira", _v(2, "D"), "=C2")
-chk("pedal_acum_encadeado", _v(7, "D"), "=D6+C7")
+chk("pedal_acum_encadeado", _v(_m["wkN"], "D"), f'=D{_m["wkN"]-1}+C{_m["wkN"]}')
 chk("pedal_tier_sem_meta", _v(_m["tier"], "B"), None)       # meta so na linha Total Pago
 chk("pedal_total_com_meta", _v(_m["total"], "B"), 500)
 chk("pedal_total_sumif_ptbr", _v(_m["total"], "C"), '=SUMIF($A:$A;"Semana*";$E:$E)')
@@ -296,7 +297,8 @@ chk("pedal_sem0_basico_igual_total", _pum["E2:K2"][2], _pum["E2:K2"][0])
 chk("pedal_sem0_sem_premium", _pum["E2:K2"][3:6], [0, 0, 0])
 chk("pedal_semana_curta_parseia", sync.parse_periodo_fim("25/08 - 29/08"), date(2026, 8, 29))
 # em 25/07 so a Semana 0 ja comecou; da Semana 1 (inicio 28/07) em diante e tudo futuro
-chk("pedal_futuras_limpas", sorted(_pc), ["E3:K3", "E4:K4", "E5:K5", "E6:K6", "E7:K7"])
+chk("pedal_futuras_limpas", sorted(_pc),
+    [f"E{r}:K{r}" for r in range(_m["wk0"] + 1, _m["wkN"] + 1)])
 # gratuitas com Meta em branco: Realizado ainda e escrito e o Gap sai como formula
 chk("pedal_grat_real", _pum[f'C{_m["grat"]}'][0], 0)
 chk("pedal_grat_gap", _pum[f'D{_m["grat"]}'][0], f'=B{_m["grat"]}-C{_m["grat"]}')
