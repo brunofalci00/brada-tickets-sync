@@ -121,6 +121,14 @@ METAS_TABS = {
     87008: "Metas [ SSA ]",
 }
 
+# Abas que ganham o grafico grande de evolucao. AUTO-CURA: o cron recria o grafico a cada run
+# porque o Google Sheets descarta grafico embutido (openpyxl) toda vez que um HUMANO edita o
+# .xlsx. O cron preserva; so a edicao humana derruba -> recriar de hora em hora repara em <=1h.
+# (CF/formula/SPARKLINE/estilo sobrevivem a edicao humana; so o grafico-objeto morre.)
+# BSB (encerrada/oculta) fica de fora.
+METAS_CHART_TABS = {86781, 87008}  # BH, SSA
+METAS_SELFHEAL_CHART = os.environ.get("METAS_SELFHEAL_CHART", "1").strip().lower() not in ("0", "false", "no")
+
 # Colunas de detalhamento por tier que a automacao controla nas abas Pagas:
 # (header na planilha, chave no dict de contagem).
 # `Realizado` (E) ja e o total pago, entao NAO ha coluna "Real. Total Pago" (era duplicata).
@@ -131,6 +139,18 @@ META_TIER_COLS = [
     ("Real. PCD", "PCD"),
     ("Real. Gratuito", "Gratuito"),
 ]
+
+# --- Camada NATIVA de metas (abas no proprio Dashboard, gravadas via gspread) ---
+# Backend: "native" (abas nativas), "xlsx" (arquivo antigo), "both" (dual-write na migracao).
+# Default "both" durante a janela de validacao; depois "native". Ver setup_metas_native.py (build).
+# `or "both"` (nao o default do get): a var do Actions vazia/ausente vira "" -> cairia em nenhum
+# backend (regressao: para o xlsx E nao roda nativo). Valor invalido (typo) tambem cai em "both".
+_mb = (os.environ.get("METAS_BACKEND") or "both").strip().lower()
+METAS_BACKEND = _mb if _mb in ("native", "xlsx", "both") else "both"
+# Abas nativas (nomes limpos — nativo aceita, ao contrario do .xlsx que proibia colchetes).
+METAS_TABS_NATIVE = {86595: "Metas BSB", 86781: "Metas BH", 87008: "Metas SSA"}
+# Colunas FIXAS (letra) do detalhamento por tier na tabela semanal nativa.
+META_TIER_COLS_NATIVE = [("G", "Básico"), ("H", "Premium"), ("I", "Combo"), ("J", "PCD"), ("K", "Gratuito")]
 
 
 # ===================================================
@@ -756,6 +776,134 @@ def write_metas_gratuitas_xlsx(ws, participants, label):
     return 1
 
 
+# ===================================================
+# METAS NATIVAS (abas no proprio Dashboard, via gspread) — substitui o .xlsx
+# ===================================================
+# Mesma logica de contagem das funcoes xlsx acima (reusada 1:1); muda so a ESCRITA: em vez de
+# baixar/editar/subir o .xlsx (openpyxl+Drive), escreve direto as celulas das abas nativas. O
+# grafico nativo e duravel -> NAO precisa de auto-cura. Toca SO E/F/G-K por semana + Realizado/Gap
+# das gratuitas; nunca A/B/C (Meta/Periodo/Semana, do humano) nem o painel.
+# LOCALE (provado por probe): formulas sem separador (`=C{r}-E{r}`) sao imunes; se precisar de
+# multi-arg no futuro, usar `;` (pt_BR), nunca `,`. USER_ENTERED parseia no locale da planilha.
+
+def _a1col(n):
+    """Indice 1-based -> letra de coluna (1->A, 27->AA)."""
+    s = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        s = chr(65 + rem) + s
+    return s
+
+
+def _find_gratuitas_native(grid):
+    """Acha a secao Gratuitas em QUALQUER lugar: (linha_1based do header, {header_norm: col_1based})."""
+    target = _norm_header("Início Monitoramento")
+    for i, row in enumerate(grid):
+        for j, val in enumerate(row):
+            if _norm_header(val) == target:
+                cols = {_norm_header(v): k + 1 for k, v in enumerate(row) if str(v).strip()}
+                return i + 1, cols
+    return None, None
+
+
+def _build_metas_writes(grid, participants, label, hoje):
+    """PURO (sem rede). Recebe o grid (list-of-lists) de uma aba nativa de metas + participantes;
+    devolve (updates, clears, msgs) p/ a Sheets API:
+      updates = [{"range": "E5:K5", "values": [[Realizado, "=C5-E5", Bas, Prem, Combo, PCD, Grat]]}, ...]
+      clears  = ["E7:K7", ...]  (semanas futuras -> branco real)
+    Espelha write_metas_pagas_xlsx + write_metas_gratuitas_xlsx (mesma contagem cumulativa-menos-anterior,
+    mesmo fill-as-time, mesma deteccao de duplicata)."""
+    updates, clears, msgs = [], [], []
+    seen, prev_cum, ignorados = {}, {}, 0
+    # tabela semanal (linhas onde col A comeca com "Semana")
+    for i, row in enumerate(grid):
+        r = i + 1
+        semana = (row[0] if len(row) > 0 else "").strip()
+        if not semana.lower().startswith("semana") or semana.lower() == "semana":
+            continue   # pula nao-semanas E o proprio header "Semana" (real e "Semana 0".."Semana N")
+        periodo_txt = (row[1] if len(row) > 1 else "").strip()
+        fim = parse_periodo_fim(periodo_txt)
+        if fim is None:
+            msgs.append(f"  [METAS] {label} {semana}: Período '{periodo_txt}' não parseável — pulando")
+            continue
+        if periodo_txt in seen:
+            msgs.append(f"  [METAS] {label} {semana}: Período duplicado '{periodo_txt}' (= {seen[periodo_txt]}) — revisar datas")
+        seen[periodo_txt] = semana
+        if _semana_futura(periodo_txt, hoje):
+            clears.append(f"E{r}:K{r}")   # futura: branco real (None), p/ CF e grafico ignorarem
+            continue
+        cum = tier_counts_cumulative(participants, fim)
+        ignorados = max(ignorados, cum["_ignorados"])
+        weekly = {k: cum.get(k, 0) - prev_cum.get(k, 0)
+                  for k in ("Básico", "Premium", "Combo", "PCD", "Gratuito", "Total Pago")}
+        prev_cum = cum
+        vals = [weekly["Total Pago"], f"=C{r}-E{r}",
+                weekly["Básico"], weekly["Premium"], weekly["Combo"], weekly["PCD"], weekly["Gratuito"]]
+        updates.append({"range": f"E{r}:K{r}", "values": [vals]})
+    if ignorados:
+        msgs.append(f"  [METAS] {label}: {ignorados} inscritos com dataPedido não parseável (ignorados)")
+    # gratuitas (header-relativo; Realizado e col C aqui, nao E)
+    hdr_row, cols = _find_gratuitas_native(grid)
+    if hdr_row is None:
+        msgs.append(f"  [METAS] {label}: seção Gratuitas não encontrada")
+    else:
+        c_inicio = cols.get(_norm_header("Início Monitoramento"))
+        c_meta = cols.get(_norm_header("Meta Gratuitas")) or cols.get(_norm_header("Meta"))
+        c_real = cols.get(_norm_header("Realizado"))
+        c_gap = cols.get(_norm_header("Gap"))
+        drow = hdr_row + 1
+        inicio_raw = None
+        if c_inicio and drow - 1 < len(grid) and c_inicio - 1 < len(grid[drow - 1]):
+            inicio_raw = grid[drow - 1][c_inicio - 1]
+        inicio = parse_inicio(inicio_raw)
+        g = gratuito_count_since(participants, inicio)
+        if c_real:
+            updates.append({"range": f"{_a1col(c_real)}{drow}", "values": [[g]]})
+        if c_gap and c_meta and c_real:
+            updates.append({"range": f"{_a1col(c_gap)}{drow}",
+                            "values": [[f"={_a1col(c_meta)}{drow}-{_a1col(c_real)}{drow}"]]})
+        msgs.append(f"  [METAS] {label} gratuitas: Realizado={g} (desde {inicio})")
+    return updates, clears, msgs
+
+
+def write_metas_native(sh, participants_por_cidade):
+    """Atualiza as abas NATIVAS de metas (BSB/BH/SSA) no proprio Sheet do dashboard. Isolada por aba
+    (uma falha nao derruba as outras nem o sync principal). NUNCA cria aba nem grafico (isso e do
+    build setup_metas_native.py); so escreve as celulas computadas."""
+    hoje = _today_brt()
+    for event_id, tab_name in METAS_TABS_NATIVE.items():
+        participants = participants_por_cidade.get(event_id, [])
+        try:
+            ws = sh.worksheet(tab_name)
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"  [METAS] aba nativa '{tab_name}' não encontrada (rodar setup_metas_native.py?) — pulando")
+            continue
+        try:
+            grid = _retry(lambda: ws.get_values(), f"metas read {tab_name}")
+            hdr = grid[0] if grid else []
+
+            def _h(idx):
+                return _norm_header(hdr[idx]) if idx < len(hdr) else ""
+            if not (_h(0) == _norm_header("Semana") and _h(4) == _norm_header("Realizado")
+                    and _h(5) == _norm_header("Gap")):
+                print(f"  [METAS] {tab_name}: header da linha 1 inesperado — pulando aba (schema guard)")
+                continue
+            updates, clears, msgs = _build_metas_writes(grid, participants, tab_name, hoje)
+            for m in msgs:
+                print(m)
+            if METAS_DRY_RUN:
+                print(f"  [METAS DRY] {tab_name}: {len(updates)} writes, {len(clears)} clears (nada enviado)")
+                continue
+            if clears:
+                _retry(lambda: ws.batch_clear(clears), f"metas clear {tab_name}")
+            if updates:
+                _retry(lambda: ws.batch_update(updates, value_input_option="USER_ENTERED"),
+                       f"metas write {tab_name}")
+            print(f"  [METAS] {tab_name}: {len(updates)} writes, {len(clears)} clears (nativo)")
+        except Exception as e:
+            print(f"  [METAS] erro nativo '{tab_name}': {e}")
+
+
 def ensure_gratuitas_ssa(wb):
     """Cria a aba Gratuitas SSA se nao existir (.xlsx nao aceita colchetes no nome da aba)."""
     if _find_ws(wb, "Metas Gratuitas [ SSA ]") is not None:
@@ -764,6 +912,65 @@ def ensure_gratuitas_ssa(wb):
     ws.append(["Início Monitoramento", "Meta Gratuitas", "Observação", "Realizado", "Gap"])
     ws.append(["", 300, "Monitorar distribuição e engajamento", "", ""])
     print("  [METAS] aba 'Metas Gratuitas  SSA' criada (Meta 300 provisoria)")
+
+
+def _last_semana_row(ws):
+    """Ultima linha cujo col-A comeca com 'Semana' (limite da tabela semanal)."""
+    last = 1
+    for r in range(2, ws.max_row + 1):
+        v = ws.cell(r, 1).value
+        if v and str(v).strip().lower().startswith("semana"):
+            last = r
+    return last
+
+
+def _metas_layout(last):
+    """Posicoes DINAMICAS dos blocos abaixo da tabela semanal, pelo nº de semanas (`last` = ultima
+    linha de Semana). Assim adicionar semanas nao colide com tier/gratuitas/grafico. Compartilhado
+    entre o setup (que monta os blocos) e o cron (que recria o grafico) p/ ambos concordarem.
+      tier_row .. tier_row+3 (titulo + Basico/Premium/Total) | grat_row .. grat_row+2 | chart em A{...}
+    """
+    tier_row = last + 2
+    grat_row = last + 7
+    chart_anchor = f"A{last + 11}"
+    return tier_row, grat_row, chart_anchor
+
+
+def add_evolucao_chart(ws, last, cidade, anchor="A20"):
+    """LineChart Realizado (E) vs Meta (C) por Semana (A), recriado do zero (refs atuais).
+
+    Ancora 'A20' (full-width abaixo da tabela/gratuitas) p/ NAO colidir com o painel (cols N:T).
+    Eixo comeca na Semana 1 (linha 3), pulando a 'Semana 0' (carga pre-lancamento) que senao
+    vira um 1o ponto gigante. AUTO-CURA: ws._charts=[] antes -> 1 chart por run (dedup); chamado
+    pelo cron a cada hora porque a edicao humana no Google derruba o grafico embutido.
+    """
+    from openpyxl.chart import LineChart, Reference
+    from openpyxl.chart.series import SeriesLabel
+    ws._charts = []
+    if last < 3:
+        return  # sem semanas suficientes p/ um grafico
+    chart = LineChart()
+    chart.title = f"Evolução semanal {cidade}"
+    chart.style = 2
+    chart.height = 8
+    chart.width = 18
+    chart.y_axis.title = "Inscricoes"
+    chart.x_axis.title = "Semana"
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+    cats = Reference(ws, min_col=1, min_row=3, max_row=last)
+    real = Reference(ws, min_col=5, min_row=3, max_row=last)
+    meta = Reference(ws, min_col=3, min_row=3, max_row=last)
+    chart.add_data(real, titles_from_data=False)
+    chart.add_data(meta, titles_from_data=False)
+    chart.set_categories(cats)
+    chart.series[0].tx = SeriesLabel(v="Realizado")
+    chart.series[1].tx = SeriesLabel(v="Meta")
+    chart.series[0].graphicalProperties.line.solidFill = "C55A11"
+    chart.series[0].graphicalProperties.line.width = 28000
+    chart.series[1].graphicalProperties.line.solidFill = "999999"
+    chart.series[1].graphicalProperties.line.dashStyle = "dash"
+    ws.add_chart(chart, anchor)
 
 
 def _drive_service():
@@ -827,6 +1034,15 @@ def sync_metas(participants_por_cidade):
             total += write_metas_gratuitas_xlsx(ws, parts, tab_name)
         except Exception as e:
             print(f"  [METAS] erro gratuitas '{tab_name}': {e}")
+        # Auto-cura do grafico grande: recria a cada run (a edicao humana no Google o derruba).
+        if event_id in METAS_CHART_TABS and METAS_SELFHEAL_CHART and not METAS_DRY_RUN:
+            try:
+                sigla = tab_name.replace("Metas", "").replace("[", "").replace("]", "").strip()
+                lsr = _last_semana_row(ws)
+                _, _, anchor = _metas_layout(lsr)
+                add_evolucao_chart(ws, lsr, sigla, anchor=anchor)
+            except Exception as e:
+                print(f"  [METAS] reseed chart '{tab_name}': {e}")
     if METAS_DRY_RUN:
         print(f"  [METAS] DRY-RUN: {total} blocos calculados, planilha NAO enviada.")
         return
@@ -943,9 +1159,20 @@ def main(argv=None):
     update_timestamps(sh, successful_events)
 
     # Metas: ultima etapa, isolada — nunca pode derrubar o sync de raw/Leadlovers.
+    # Backend via METAS_BACKEND: "both" (migracao), "native" (so abas nativas), "xlsx" (so arquivo).
     try:
-        print("\n[METAS] atualizando planilha de metas...")
-        sync_metas(participants_por_cidade)
+        if METAS_BACKEND in ("xlsx", "both"):
+            print(f"\n[METAS] (.xlsx) atualizando planilha de metas... [backend={METAS_BACKEND}]")
+            try:
+                sync_metas(participants_por_cidade)
+            except Exception as e:
+                print(f"  [METAS] backend xlsx falhou (seguiu): {e}")
+        if METAS_BACKEND in ("native", "both"):
+            print(f"\n[METAS] (nativo) atualizando abas nativas de metas... [backend={METAS_BACKEND}]")
+            try:
+                write_metas_native(sh, participants_por_cidade)
+            except Exception as e:
+                print(f"  [METAS] backend nativo falhou (seguiu): {e}")
     except Exception as e:
         print(f"  [METAS] etapa de metas falhou (sync principal seguiu OK): {e}")
 

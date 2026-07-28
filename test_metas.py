@@ -97,6 +97,114 @@ chk("futura_passada", sync._semana_futura("14/05 - 21/05", HOJE), False)
 chk("futura_endash", sync._semana_futura("25/06 – 02/07", HOJE), True)  # en-dash
 chk("futura_lixo", sync._semana_futura("xxx", HOJE), False)             # nao-parseavel -> nao esconde
 
+# --- painel + grafico (storytelling duravel; nada de rede) ---
+import io as _io         # noqa: E402
+import os as _os         # noqa: E402
+import sys as _sys       # noqa: E402
+import openpyxl as _oxl  # noqa: E402
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import setup_metas_xlsx as _S  # noqa: E402
+
+
+def _fake_tab():
+    wb = _oxl.Workbook()
+    ws = wb.active
+    ws.title = "Metas BH"
+    hdr = ["Semana", "Período", "Meta", "Acumulado", "Realizado", "Gap",
+           "Real. Básico", "Real. Premium", "Real. Combo", "Real. PCD", "Real. Gratuito"]
+    for c, h in enumerate(hdr, start=1):
+        ws.cell(1, c).value = h
+    semanas = [("Semana 0", "30/04 - 07/05"), ("Semana 1", "07/05 - 14/05"),
+               ("Semana 2", "14/05 - 21/05"), ("Semana 3", "21/05 - 28/05"),
+               ("Semana 4", "28/05 - 04/06"), ("Semana 5", "04/06 - 11/06"),
+               ("Semana 6", "11/06 - 18/06")]
+    for i, (s, p) in enumerate(semanas):
+        r = 2 + i
+        ws.cell(r, 1).value = s
+        ws.cell(r, 2).value = p
+        ws.cell(r, 3).value = 100 + i * 10   # Meta semanal
+        ws.cell(r, 5).value = 50 + i * 5     # Realizado semanal
+        ws.cell(r, 7).value = 40 + i * 5     # Real. Basico
+        ws.cell(r, 8).value = 10             # Real. Premium
+    # so o que o painel referencia do bloco de tier (11-13) e gratuitas (17)
+    ws.cell(11, 2).value, ws.cell(11, 3).value = 1200, 672
+    ws.cell(12, 2).value, ws.cell(12, 3).value = 200, 160
+    ws.cell(13, 2).value, ws.cell(13, 3).value = 1400, 832
+    ws.cell(17, 2).value, ws.cell(17, 3).value = 300, 99
+    return wb, ws
+
+
+# layout dinamico (posicoes pelo nº de semanas)
+chk("layout_bh", sync._metas_layout(8), (10, 15, "A19"))
+chk("layout_ssa_estendido", sync._metas_layout(14), (16, 21, "A25"))
+
+_wb, _ws = _fake_tab()
+_before_AK = [[_ws.cell(r, c).value for c in range(1, 12)] for r in range(2, 9)]
+# fake tab tem tier@10-13 e grat@15-17 -> tier_row=10, grat_row=15
+_S.build_painel(_ws, "BH", 8, {"Básico": 1200, "Premium": 200, "Total": 1400}, 10, 15)
+sync.add_evolucao_chart(_ws, 8, "BH")
+
+chk("painel_titulo", _ws.cell(2, 14).value, "Painel BH")
+chk("painel_realizado_sum", _ws.cell(3, 15).value, '=SUMIF($A:$A,"Semana*",$E:$E)')
+chk("painel_tier_basico_real", _ws.cell(9, 15).value, "=$C$11")
+chk("painel_tier_basico_pct", str(_ws.cell(9, 17).value).startswith("=IF(OR($B$11"), True)
+chk("painel_sem_sparkline", _ws.cell(3, 18).value, None)   # R3 vazio (sparkline removido)
+chk("painel_AK_intacto", [[_ws.cell(r, c).value for c in range(1, 12)] for r in range(2, 9)], _before_AK)
+chk("painel_chart_1", len(_ws._charts), 1)
+chk("painel_chart_anchor_A20", _ws._charts[0].anchor, "A20")  # em memoria e a string; vira A20 (col0,row19) ao salvar
+
+# sobrevive ao round-trip do openpyxl (== o que o cron faz: load -> save)
+_buf = _io.BytesIO()
+_wb.save(_buf)
+_ws2 = _oxl.load_workbook(_io.BytesIO(_buf.getvalue())).worksheets[0]
+chk("painel_rt_titulo", _ws2.cell(2, 14).value, "Painel BH")
+chk("painel_rt_chart_sem_dup", len(_ws2._charts), 1)
+
+# --- bloco de tier: Gap na coluna E (NAO na D escondida) ---
+_wbt = _oxl.Workbook()
+_wst = _wbt.active
+_wst.cell(2, 1).value = "Semana 1"   # 1 linha 'Semana*' pro SUMIF
+_wst.cell(2, 5).value = 100
+_S.build_tier_block(_wst, {"Básico": 1200, "Premium": 200, "Total": 1400}, 10)
+chk("tier_header_gap_em_E", _wst.cell(10, 5).value, "Gap")          # E10
+chk("tier_header_D_vazio", _wst.cell(10, 4).value, None)            # D10 sem 'Gap'
+chk("tier_gap_total_em_E", str(_wst.cell(13, 5).value).startswith('=IF($B13'), True)  # E13 Gap guardado
+chk("tier_gap_D_vazio", _wst.cell(13, 4).value, None)              # D13 sem Gap
+chk("tier_total_realizado_sumif", _wst.cell(13, 3).value, '=SUMIF($A:$A,"Semana*",$E:$E)')
+
+# --- write_metas_native: _build_metas_writes (mapeamento/branco/gratuitas, sem rede) ---
+HOJE_N = date(2026, 6, 22)
+_grid = [
+    ["Semana", "Período", "Meta", "Acumulado", "Realizado", "Gap",
+     "Real. Básico", "Real. Premium", "Real. Combo", "Real. PCD", "Real. Gratuito"],
+    ["Semana 0", "30/04 - 07/05"],   # passada, 0 inscritos ate 07/05
+    ["Semana 1", "07/05 - 14/05"],   # passada, 2 pagos
+    ["Semana 2", "25/06 - 02/07"],   # FUTURA (inicio 25/06 > 22/06) -> clear
+    [],
+    ["Meta por tier", "Meta", "Realizado"],   # NAO e linha 'Semana' -> ignora
+    ["Básico (R$99)"],
+    ["Metas Gratuitas"],
+    ["Início Monitoramento", "Meta Gratuitas", "Realizado", "Gap", "Observação"],
+    ["01/05", 300, "", "", "obs"],   # gratuitas: dados na linha 10
+]
+_parts = [P("Kit Vai Bem", "99.00", data="10/05/2026 10:00"),                          # basico, Semana 1
+          P("KIT PREMIUM", "159.00", data="12/05/2026 10:00"),                         # premium, Semana 1
+          P("Kit Vai Bem - Oculto", "99.00", status="Cortesia", data="03/05/2026 10:00")]  # gratuito desde 01/05
+_u, _c, _log = sync._build_metas_writes(_grid, _parts, "TEST", HOJE_N)
+_um = {d["range"]: d["values"][0] for d in _u}
+_starts = [r.split(":")[0] for r in _um]
+chk("nat_clear_futura", "E4:K4" in _c, True)               # Semana 2 (linha 4) futura -> clear
+chk("nat_sem0_zero", _um["E2:K2"][0], 0)                   # Semana 0: 0 pagos -> escreve 0 (nao branco)
+chk("nat_gap_formula", _um["E3:K3"][1], "=C3-E3")          # F = formula sem separador (imune a locale)
+chk("nat_sem1_total", _um["E3:K3"][0], 2)                  # Semana 1: 2 pagos ate 14/05
+chk("nat_sem1_basico", _um["E3:K3"][2], 1)                 # G: 1 basico
+chk("nat_sem1_premium", _um["E3:K3"][3], 1)                # H: 1 premium
+chk("nat_no_tierblock", any(s in ("E6", "E7") for s in _starts), False)  # bloco tier nao escrito
+chk("nat_grat_real_C", _um["C10"][0], 1)                   # gratuitas Realizado em col C (header-relativo)
+chk("nat_grat_gap_D", _um["D10"][0], "=B10-C10")           # gratuitas Gap em col D
+chk("nat_never_AB", any(s[0] in "AB" for s in _starts), False)            # nunca escreve A/B (humano)
+chk("nat_C_only_grat", all(s == "C10" for s in _starts if s[0] == "C"), True)  # C so na gratuitas
+
 print()
 if _fail:
     print(f"=== {_fail} FALHAS ===")

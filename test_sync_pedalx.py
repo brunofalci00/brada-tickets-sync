@@ -116,12 +116,15 @@ class SyncPedalXTests(unittest.TestCase):
                  mock.patch.object(sync, "get_ll_sheet", return_value="ll"), \
                  mock.patch.object(sync, "sync_event", side_effect=fake_sync_event), \
                  mock.patch.object(sync, "update_timestamps") as timestamps, \
-                 mock.patch.object(sync, "sync_metas") as metas:
+                 mock.patch.object(sync, "sync_metas") as metas, \
+                 mock.patch.object(sync, "write_metas_native") as metas_native:
                 sync.main([])
             self.assertEqual(calls, [first["key"], "pedalx"])
             timestamps.assert_called_once()
             self.assertEqual(timestamps.call_args.args[1], [first])
+            # backend "both" (default): os DOIS destinos de metas sao escritos.
             metas.assert_called_once()
+            metas_native.assert_called_once()
         finally:
             sync.EVENTS = old_events
 

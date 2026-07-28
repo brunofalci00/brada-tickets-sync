@@ -32,4 +32,5 @@ jobs:
           LL_SEQUENCE_BH: ${{ secrets.LL_SEQUENCE_BH }}
           LL_SEQUENCE_SSA: ${{ secrets.LL_SEQUENCE_SSA }}
           METAS_SPREADSHEET_ID: ${{ secrets.METAS_SPREADSHEET_ID }}
+          METAS_BACKEND: ${{ vars.METAS_BACKEND }}   # native|xlsx|both (vazio=both, default no codigo)
         run: python sync.py
