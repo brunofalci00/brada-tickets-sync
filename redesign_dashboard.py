@@ -575,27 +575,36 @@ DASHBOARD_CONFIGS = {
         "accepted_statuses": {"Pago", "Cortesia"},
         "expected_modalidades": {"Corrida 5km", "Caminhada 5km"},
         "expected_categorias": {"KIT ATLETA", "KIT ATLETA - CORTESIAS"},
+        # As duas tabelas usam as MESMAS linhas (modalidade) e variam so as colunas. Isso e
+        # deliberado, por duas razoes descobertas ao conferir a aba com dado real em 29/07:
+        #
+        # 1. O builder acrescenta uma coluna "Total" que SOMA as colunas da tabela. Misturar
+        #    dois recortes das mesmas pessoas (pago/cortesia + masc/fem) fazia o Total dobrar:
+        #    5 inscritos viravam 10. Cada tabela carrega um recorte so, e o Total fecha.
+        # 2. Criterio NEGATIVo em coluna de texto casa com o CABECALHO da raw: "<>*CORTESIA*"
+        #    contava "Categoria" da linha 1 e devolvia 6 para 5 inscritos. Os criterios de
+        #    linha aqui sao positivos ("*Corrida 5km*"), que o cabecalho nunca satisfaz.
+        #
+        # A leitura de pago x gratuito, que e o que casa com as duas metas, sai da linha
+        # Total da primeira tabela: coluna Pagos e coluna Cortesias.
         "tables": [
-            {"title": "INSCRITOS POR MODALIDADE", "row_col": "C",
+            {"title": "INSCRITOS POR MODALIDADE — PAGOS x CORTESIAS", "row_col": "C",
              "columns": [
-                 {"header": "Pagos", "criteria": [("B", "<>*CORTESIA*")]},
+                 # Prefixo + exclusao: "KIT ATLETA*" tolera espaco sobrando (o defeito cronico
+                 # da TicketSports) e ja barra o cabecalho "Categoria"; o "<>*CORTESIA*" tira
+                 # a categoria de cortesia, que tambem comeca com "KIT ATLETA".
+                 {"header": "Pagos", "criteria": [("B", "KIT ATLETA*"), ("B", "<>*CORTESIA*")]},
                  {"header": "Cortesias", "criteria": [("B", "*CORTESIA*")]},
-                 {"header": "Masculino", "criteria": [("D", "M")]},
-                 {"header": "Feminino", "criteria": [("D", "F")]},
              ],
              "rows": [
                  ("Corrida 5km", "*Corrida 5km*"),
                  ("Caminhada 5km", "*Caminhada 5km*"),
              ]},
-            {"title": "PAGOS x GRATUITOS", "row_col": "B",
-             "columns": [
-                 {"header": "Total", "criteria": [("A", "<>")]},
-                 {"header": "Masculino", "criteria": [("D", "M")]},
-                 {"header": "Feminino", "criteria": [("D", "F")]},
-             ],
+            {"title": "INSCRITOS POR MODALIDADE — SEXO", "row_col": "C",
+             "columns": _SEXO_COLUMNS,
              "rows": [
-                 ("Pagos", "<>*CORTESIA*"),
-                 ("Gratuitos", "*CORTESIA*"),
+                 ("Corrida 5km", "*Corrida 5km*"),
+                 ("Caminhada 5km", "*Caminhada 5km*"),
              ]},
         ],
     },
