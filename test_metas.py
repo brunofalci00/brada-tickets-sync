@@ -211,20 +211,30 @@ chk("nat_C_only_grat", all(s == "C10" for s in _starts if s[0] == "C"), True)  #
 import setup_metas_pedal as SP  # noqa: E402
 
 # --- regua semanal derivada (1a venda -> vespera do evento) ---
-_reguas = {k: SP.semanas(c["inicio"], c["fim"]) for k, c in SP.CONFIGS.items()}
+# cada config carrega a propria meta: os pedais herdam 500, Santos declara 1000
+_metas_cfg = {k: c.get("meta_total", SP.META_TOTAL) for k, c in SP.CONFIGS.items()}
+_reguas = {k: SP.semanas(c["inicio"], c["fim"], _metas_cfg[k]) for k, c in SP.CONFIGS.items()}
 for _k, _r in _reguas.items():
-    chk(f"pedal_soma_500_{_k}", sum(m for _, _, m in _r), SP.META_TOTAL)
-    chk(f"pedal_sem_periodo_dup_{_k}", len({p for _, p, _ in _r}), len(_r))
+    chk(f"regua_soma_meta_{_k}", sum(m for _, _, m in _r), _metas_cfg[_k])
+    chk(f"regua_sem_periodo_dup_{_k}", len({p for _, p, _ in _r}), len(_r))
+    # bordas encaixam em TODAS as reguas, nao so na do Road
+    chk(f"regua_bordas_encaixam_{_k}",
+        all(_r[i][1].split(" - ")[1] == _r[i + 1][1].split(" - ")[0] for i in range(len(_r) - 1)),
+        True)
 chk("pedal_n_road", len(_reguas["pedalx_road"]), 5)
 chk("pedal_n_manaus", len(_reguas["pedalx_manaus"]), 7)
 chk("pedal_n_canastra", len(_reguas["pedalx_canastra"]), 12)
+# Santos: 29/07 -> 14/09 (signUpDeadLine), meta 1000 em 7 semanas
+chk("santos_n_semanas", len(_reguas["circuito_santos"]), 7)
+chk("santos_meta_nao_herdou_500", _metas_cfg["circuito_santos"], 1000)
+chk("santos_primeira_semana", _reguas["circuito_santos"][0][1], "29/07 - 05/08")
+chk("santos_ultima_semana", _reguas["circuito_santos"][-1][1], "09/09 - 14/09")
+# os pedais NAO podem ter herdado a meta do Santos (regressao da parametrizacao)
+chk("pedais_seguem_em_500",
+    {_metas_cfg[k] for k in ("pedalx_road", "pedalx_manaus", "pedalx_canastra")}, {500})
 # ultima semana pode ser curta e termina no ULTIMO DIA DE VENDA lido no site,
 # nao na vespera do evento (Road: vende ate 23/08, evento so em 30/08)
 chk("pedal_ultima_semana_road", _reguas["pedalx_road"][-1][1], "18/08 - 23/08")
-# limites se sobrepoem de proposito: o fim de uma semana e o inicio da seguinte
-chk("pedal_bordas_encaixam",
-    all(_reguas["pedalx_road"][i][1].split(" - ")[1] == _reguas["pedalx_road"][i + 1][1].split(" - ")[0]
-        for i in range(4)), True)
 # janela invalida deve estourar, nao gerar regua vazia
 try:
     SP.semanas(date(2026, 8, 30), date(2026, 8, 30))
@@ -307,6 +317,42 @@ chk("pedal_nunca_AB", any(s[0] in "AB" for s in _pstarts), False)
 chk("pedal_D_so_na_gratuitas",
     all(s == f'D{_m["grat"]}' for s in _pstarts if s[0] == "D"), True)
 
+# --- layout do Circuito Santos: rateio de gratuitas, tier proprio, ancora do grafico ---
+_sg, _sm = SP.build_layout(SP.CONFIGS["circuito_santos"])
+
+
+def _val(grid, r, letra):
+    v = grid[r - 1][SP.col_idx(letra)].get("userEnteredValue", {})
+    return v.get("stringValue", v.get("numberValue", v.get("formulaValue")))
+
+
+chk("santos_tier_label", _val(_sg, _sm["tier"], "A"), "Inscrição R$70 (tier único)")
+chk("santos_tier_sem_meta", _val(_sg, _sm["tier"], "B"), None)
+chk("santos_total_pago_1000", _val(_sg, _sm["total"], "B"), 1000)
+# a linha do cron e hdr+1 (== marcos["grat"]) e e a UNICA com meta total e Realizado
+chk("santos_grat_meta_1000", _val(_sg, _sm["grat"], "B"), 1000)
+chk("santos_rateio_2_linhas", _sm["rateio"], 2)
+chk("santos_rateio_rotulos",
+    [_val(_sg, _sm["grat"] + 1 + k, "A") for k in range(2)],
+    ["Asia Shipping (garantido)", "A conquistar"])
+chk("santos_rateio_metas", [_val(_sg, _sm["grat"] + 1 + k, "B") for k in range(2)], [600, 400])
+chk("santos_rateio_fecha_o_total",
+    sum(_val(_sg, _sm["grat"] + 1 + k, "B") for k in range(2)), _val(_sg, _sm["grat"], "B"))
+# rateio NAO pode ter Realizado: a plataforma nao separa a origem da cortesia
+chk("santos_rateio_sem_realizado",
+    [_val(_sg, _sm["grat"] + 1 + k, "C") for k in range(2)], [None, None])
+# os pedais continuam sem rateio e com o rotulo de R$139
+_rg, _rm = SP.build_layout(SP.CONFIGS["pedalx_road"])
+chk("pedal_sem_rateio", _rm["rateio"], 0)
+chk("pedal_tier_label_intacto", _val(_rg, _rm["tier"], "A"), "Inscrição R$139 (tier único)")
+chk("pedal_grat_sem_meta", _val(_rg, _rm["grat"], "B"), None)
+# grafico: a folga de 2 linhas abaixo do conteudo vale em TODAS as abas, com ou sem rateio
+for _k in SP.CONFIGS:
+    _rq, _mk = SP.build_requests(999, SP.CONFIGS[_k])
+    _anc = [r for r in _rq if "addChart" in r][0]["addChart"]["chart"]["position"]
+    chk(f"grafico_folga_2_{_k}",
+        _anc["overlayPosition"]["anchorCell"]["rowIndex"] - _mk["last"], 2)
+
 # --- guarda: etapa nao sincronizada != etapa com zero inscritos ---
 import gspread as _gs  # noqa: E402
 
@@ -329,14 +375,18 @@ _esp2 = _SheetEspiao()
 sync.write_metas_native(_esp2, {87735: []})
 chk("guarda_chave_presente_processa", _esp2.pedidas, ["Metas Pedal Road"])
 
-# --- registro dos 6 eventos e protecao no outro builder ---
+# --- registro dos 7 eventos e protecao no outro builder ---
 import redesign_dashboard as _rd  # noqa: E402
 
-chk("metas_native_6_eventos", len(sync.METAS_TABS_NATIVE), 6)
-chk("metas_native_cobre_pedais",
-    {87735, 87732, 87727} <= set(sync.METAS_TABS_NATIVE), True)
-chk("metas_pedal_fora_do_xlsx",
-    set(sync.METAS_TABS_NATIVE) - set(sync.METAS_TABS), {87735, 87732, 87727})
+chk("metas_native_7_eventos", len(sync.METAS_TABS_NATIVE), 7)
+chk("metas_native_cobre_pedais_e_santos",
+    {87735, 87732, 87727, 87817} <= set(sync.METAS_TABS_NATIVE), True)
+# O .xlsx e da Tamyris e so tem as 3 corridas; tudo que o setup_metas_pedal.py constroi
+# fica fora dele. Santos entrou em 29/07 pelo mesmo motivo dos pedais.
+chk("nativo_only_fora_do_xlsx",
+    set(sync.METAS_TABS_NATIVE) - set(sync.METAS_TABS), {87735, 87732, 87727, 87817})
+chk("builder_pedal_bate_com_nativo_only",
+    sync.METAS_TABS_BUILDER_PEDAL, set(sync.METAS_TABS_NATIVE) - set(sync.METAS_TABS))
 _titulos_pedal = {c["tab"] for c in SP.CONFIGS.values()}
 chk("titulos_batem_com_sync", _titulos_pedal <= set(sync.METAS_TABS_NATIVE.values()), True)
 chk("titulos_protegidos_no_builder", _titulos_pedal <= _rd.PROTECTED_TITLES, True)

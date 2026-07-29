@@ -96,6 +96,27 @@ EVENTS = [
         "non_blocking": True,
         "expected_categorias": {"CATEGORIA SPORT - 30 km ", "CATEGORIA PRÓ - 60 km"},
     },
+    # Circuito Santos. ATENCAO: evento de OUTRO organizador (EGP BRASIL, 22.087.202/0001-55),
+    # nao da Brada. `GET /Order/List` e escopado por CNPJ do login e devolve 204 vazio aqui —
+    # medido em 29/07 contra controle: os 6 eventos Brada respondem 200, quatro eventos de
+    # terceiros respondem 204. Enquanto o acesso nao for concedido a marketing@brada.social:
+    #   fetch_all_orders -> [] -> write_raw_tab levanta -> non_blocking segura -> a chave nao
+    #   entra em participants_por_cidade -> write_metas_native pula a aba (nao zera).
+    # Ou seja, a etapa loga falha de hora em hora DE PROPOSITO, e a aba de metas fica em
+    # branco em vez de mostrar zero. Em branco = sem dado; zero seria mentira.
+    {
+        "key": "santos",
+        "id": 87817,
+        "label": "Circuito Santos",
+        "raw_tab": "raw_inscritos_santos",
+        "dash_tab": "Circuito Santos",
+        "ll_sequence_env": "LL_SEQUENCE_SANTOS",
+        "ll_sent_tab": "Etapa Circuito Santos",
+        "timestamp_cell": "F2",
+        "non_blocking": True,
+        "expected_modalidades": {"Corrida 5km", "Caminhada 5km"},
+        "expected_categorias": {"KIT ATLETA", "KIT ATLETA - CORTESIAS"},
+    },
 ]
 
 # Credenciais via variáveis de ambiente (GitHub Secrets) ou arquivo local
@@ -176,9 +197,9 @@ META_TIER_COLS = [
 _mb = (os.environ.get("METAS_BACKEND") or "both").strip().lower()
 METAS_BACKEND = _mb if _mb in ("native", "xlsx", "both") else "both"
 # Abas nativas (nomes limpos — nativo aceita, ao contrario do .xlsx que proibia colchetes).
-# Os 3 pedais sao NATIVO-ONLY: nao entram em METAS_TABS (o .xlsx e da Tamyris e so tem
-# corridas) nem em METAS_CHART_TABS (auto-cura e do grafico do .xlsx; o nativo e duravel).
-# Build das abas: setup_metas_pedal.py.
+# Os 3 pedais e o Circuito Santos sao NATIVO-ONLY: nao entram em METAS_TABS (o .xlsx e da
+# Tamyris e so tem corridas) nem em METAS_CHART_TABS (auto-cura e do grafico do .xlsx; o
+# nativo e duravel). Build das abas: setup_metas_pedal.py.
 METAS_TABS_NATIVE = {
     86595: "Metas BSB",
     86781: "Metas BH",
@@ -186,7 +207,11 @@ METAS_TABS_NATIVE = {
     87735: "Metas Pedal Road",
     87732: "Metas Pedal Manaus",
     87727: "Metas Pedal Canastra",
+    87817: "Metas Circuito Santos",
 }
+# Abas cujo build e o setup_metas_pedal.py (as demais vem do setup_metas_native.py). Usado
+# so para sugerir o builder certo na mensagem de "aba nao encontrada".
+METAS_TABS_BUILDER_PEDAL = {87735, 87732, 87727, 87817}
 # Colunas FIXAS (letra) do detalhamento por tier na tabela semanal nativa.
 META_TIER_COLS_NATIVE = [("G", "Básico"), ("H", "Premium"), ("I", "Combo"), ("J", "PCD"), ("K", "Gratuito")]
 
@@ -910,11 +935,12 @@ def write_metas_native(sh, participants_por_cidade):
     build setup_metas_native.py); so escreve as celulas computadas."""
     hoje = _today_brt()
     for event_id, tab_name in METAS_TABS_NATIVE.items():
-        # Etapa AUSENTE do dict != etapa com zero inscritos. Os pedais sao `non_blocking`:
-        # quando a API falha, main() da `continue` e nunca grava a chave. Sem esta guarda, o
-        # `.get(..., [])` devolveria lista vazia e escreveria 0 em todas as semanas passadas,
-        # apagando numero bom ate o run seguinte. Lista vazia com a chave presente (loja
-        # aberta que ainda nao vendeu) continua escrevendo 0, que e o correto.
+        # Etapa AUSENTE do dict != etapa com zero inscritos. Os pedais e o Santos sao
+        # `non_blocking`: quando a API falha, main() da `continue` e nunca grava a chave. Sem
+        # esta guarda, o `.get(..., [])` devolveria lista vazia e escreveria 0 em todas as
+        # semanas passadas, apagando numero bom ate o run seguinte. Lista vazia com a chave
+        # presente (loja aberta que ainda nao vendeu) continua escrevendo 0, que e o correto.
+        # No Santos esta guarda e o estado PERMANENTE ate o acesso ao evento 87817 chegar.
         if event_id not in participants_por_cidade:
             print(f"  [METAS] {tab_name}: etapa nao sincronizada neste run — pulando (nao zera a aba)")
             continue
@@ -922,7 +948,8 @@ def write_metas_native(sh, participants_por_cidade):
         try:
             ws = sh.worksheet(tab_name)
         except gspread.exceptions.WorksheetNotFound:
-            builder = "setup_metas_pedal.py" if "Pedal" in tab_name else "setup_metas_native.py"
+            builder = ("setup_metas_pedal.py" if event_id in METAS_TABS_BUILDER_PEDAL
+                       else "setup_metas_native.py")
             print(f"  [METAS] aba nativa '{tab_name}' não encontrada (rodar {builder}?) — pulando")
             continue
         try:

@@ -382,8 +382,10 @@ PROTECTED_TITLES = {
     "Brasília", "Belo Horizonte", "Salvador",
     "Metas SSA", "Metas BH", "Metas BSB",
     "Metas Pedal Road", "Metas Pedal Manaus", "Metas Pedal Canastra",
+    "Metas Circuito Santos",
     "raw_inscritos_brasilia", "raw_inscritos_bh", "raw_inscritos_ssa",
     "raw_inscritos_pedalx", "raw_inscritos_pedalx_manaus", "raw_inscritos_pedalx_canastra",
+    "raw_inscritos_santos",
 }
 
 # Mesmos baldes nas tres etapas de pedal, para o time comparar etapa a etapa.
@@ -393,6 +395,17 @@ PEDAL_COUPON_BUCKETS = [
     {"label": "Nubank", "criteria": [("F", "*NUBANK*")]},
     {"label": "Federação", "criteria": [("F", "*Federa*")]},
     {"label": "Assessoria", "criteria": [("F", "*Assessoria*")]},
+    {"label": "Cortesia", "criteria": [("F", "*cortesia*")]},
+    {"label": "Sem cupom", "criteria": [("F", ""), ("A", "<>")]},
+    {"label": "Outros", "residual": True},
+]
+
+# Circuito Santos. PROVISORIO: sem acesso ao Order/List do evento nao da para observar
+# quais cupons existem de fato. "Asia Shipping" e o patrocinador que garante 600 cortesias
+# (ata de 29/07); se as cortesias dele nao vierem por cupom dedicado, este balde fica em
+# zero e o rateio da aba de metas continua sendo planejamento, nao medicao.
+SANTOS_COUPON_BUCKETS = [
+    {"label": "Asia Shipping", "criteria": [("F", "*asia*")]},
     {"label": "Cortesia", "criteria": [("F", "*cortesia*")]},
     {"label": "Sem cupom", "criteria": [("F", ""), ("A", "<>")]},
     {"label": "Outros", "residual": True},
@@ -542,6 +555,47 @@ DASHBOARD_CONFIGS = {
                  ('Sub 23 - 19 a 22 | Fem', 'Sub 23  - 19 a 22 | Fem'),
                  ('Sub 30 - 23 a 29 | Masc', 'Sub 30 - 23 a 29 | Masc'),
                  ('Sub 30 - 23 a 29 | Fem', 'Sub 30 - 23 a 29 | Fem'),
+             ]},
+        ],
+    },
+    # --- Circuito Santos. NAO CONSTRUIR ainda: `Order/List` e escopado pelo CNPJ do login e
+    # este evento e da EGP BRASIL, entao a raw nunca chega a existir e _validate_custom
+    # aborta em "raw obrigatoria nao encontrada". A config fica pronta para o dia em que o
+    # acesso ao evento 87817 for concedido — ai basta `--event santos`.
+    # `KIT ATLETA - CORTESIAS` CONTEM `KIT ATLETA`: por isso a coluna de pagos exclui com
+    # "<>*CORTESIA*" em vez de casar o prefixo, que somaria gratuito dentro de pago.
+    # Os baldes de cupom sao PROVISORIOS — sem acesso nao da para observar cupom real.
+    "santos": {
+        "label": "Santos", "raw_tab": "raw_inscritos_santos", "dash_tab": "Circuito Santos",
+        "has_nubank": False,
+        "title": "CIRCUITO SANTOS — 20/09/2026",
+        "coupon_buckets": SANTOS_COUPON_BUCKETS,
+        "timestamp_cell": "F2", "protected_titles": PROTECTED_TITLES,
+        "allowed_dash_tabs": {"Circuito Santos"},
+        "accepted_statuses": {"Pago", "Cortesia"},
+        "expected_modalidades": {"Corrida 5km", "Caminhada 5km"},
+        "expected_categorias": {"KIT ATLETA", "KIT ATLETA - CORTESIAS"},
+        "tables": [
+            {"title": "INSCRITOS POR MODALIDADE", "row_col": "C",
+             "columns": [
+                 {"header": "Pagos", "criteria": [("B", "<>*CORTESIA*")]},
+                 {"header": "Cortesias", "criteria": [("B", "*CORTESIA*")]},
+                 {"header": "Masculino", "criteria": [("D", "M")]},
+                 {"header": "Feminino", "criteria": [("D", "F")]},
+             ],
+             "rows": [
+                 ("Corrida 5km", "*Corrida 5km*"),
+                 ("Caminhada 5km", "*Caminhada 5km*"),
+             ]},
+            {"title": "PAGOS x GRATUITOS", "row_col": "B",
+             "columns": [
+                 {"header": "Total", "criteria": [("A", "<>")]},
+                 {"header": "Masculino", "criteria": [("D", "M")]},
+                 {"header": "Feminino", "criteria": [("D", "F")]},
+             ],
+             "rows": [
+                 ("Pagos", "<>*CORTESIA*"),
+                 ("Gratuitos", "*CORTESIA*"),
              ]},
         ],
     },

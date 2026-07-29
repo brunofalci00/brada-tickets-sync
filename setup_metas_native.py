@@ -214,7 +214,14 @@ def cf_color(rule):
     return None
 
 
-def chart_request(sid, sigla, last):
+def chart_request(sid, sigla, last, extra=0):
+    """Grafico de evolucao semanal. `last` = ultima linha de semana (1-based).
+
+    A ancora fica em `last + 10 + extra`, o que deixa duas linhas de folga abaixo do bloco
+    padrao (8 linhas sob as semanas). `extra` existe para layouts que crescem esse bloco —
+    ex.: as linhas de rateio de gratuitas do Circuito Santos. Default 0 preserva as abas
+    de corrida e de pedal exatamente como estao.
+    """
     def rng(c0, c1):
         return {"sheetId": sid, "startRowIndex": 0, "endRowIndex": last,
                 "startColumnIndex": c0, "endColumnIndex": c1}
@@ -231,7 +238,7 @@ def chart_request(sid, sigla, last):
                  "color": hexcol("FF999999"), "lineStyle": {"type": "MEDIUM_DASHED", "width": 2}},
             ]}},
         "position": {"overlayPosition": {
-            "anchorCell": {"sheetId": sid, "rowIndex": last + 10, "columnIndex": 0},
+            "anchorCell": {"sheetId": sid, "rowIndex": last + 10 + extra, "columnIndex": 0},
             "offsetXPixels": 0, "offsetYPixels": 0, "widthPixels": 720, "heightPixels": 320}}
     }}}
 

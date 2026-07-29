@@ -4,6 +4,8 @@ import os
 import unittest
 from unittest import mock
 
+import gspread
+
 import sync
 
 
@@ -42,7 +44,8 @@ class SyncPedalXTests(unittest.TestCase):
 
     def test_configuration_is_appended_and_isolated_from_metas(self):
         self.assertEqual([e["key"] for e in sync.EVENTS],
-                         ["bsb", "bh", "ssa", "pedalx", "pedalx_manaus", "pedalx_canastra"])
+                         ["bsb", "bh", "ssa", "pedalx", "pedalx_manaus", "pedalx_canastra",
+                          "santos"])
         self.assertEqual(self.event["id"], 87735)
         self.assertEqual(self.event["raw_tab"], "raw_inscritos_pedalx")
         self.assertEqual(self.event["dash_tab"], "Pedal X Road")
@@ -74,6 +77,53 @@ class SyncPedalXTests(unittest.TestCase):
         self.assertEqual(ids, {87735, 87732, 87727})
         tabs = [e["raw_tab"] for e in pedais] + [e["dash_tab"] for e in pedais]
         self.assertEqual(len(tabs), len(set(tabs)), "abas de pedal nao podem colidir")
+
+    def test_santos_is_registered_non_blocking_and_never_emails(self):
+        """Circuito Santos (87817) e de OUTRO organizador (EGP BRASIL).
+
+        Order/List e escopado por CNPJ do login e devolve 204 vazio, entao a etapa falha
+        todo run ate o acesso chegar. `non_blocking` e o que transforma isso em log em vez
+        de run quebrado — sem ele, as outras 6 etapas parariam junto.
+        """
+        santos = next(e for e in sync.EVENTS if e["key"] == "santos")
+        self.assertEqual(santos["id"], 87817)
+        self.assertTrue(santos["non_blocking"], "sem non_blocking o bloqueio derruba o run")
+        self.assertEqual(santos["timestamp_cell"], "F2")
+        self.assertIn(87817, sync.METAS_TABS_NATIVE)
+        self.assertNotIn(87817, sync.METAS_TABS)
+        self.assertNotIn(87817, sync.METAS_CHART_TABS)
+        self.assertEqual(os.environ.get(santos["ll_sequence_env"], ""), "")
+        # a raw e o dash nao podem colidir com nenhuma outra etapa
+        outros = [e for e in sync.EVENTS if e["key"] != "santos"]
+        self.assertNotIn(santos["raw_tab"], {e["raw_tab"] for e in outros})
+        self.assertNotIn(santos["dash_tab"], {e["dash_tab"] for e in outros})
+
+    def test_blocked_event_leaves_metas_tab_untouched(self):
+        """O caminho completo do bloqueio: 204 -> raw preservada -> aba de metas intocada.
+
+        Escrever 0 diria "nao vendeu" quando a verdade e "nao da pra ver". O elo que
+        garante isso: write_raw_tab LEVANTA em lista vazia, main() pula a chave, e
+        write_metas_native so processa evento presente em participants_por_cidade.
+        """
+        # elo 1: lista vazia levanta, entao a raw nunca e sobrescrita
+        with self.assertRaisesRegex(ValueError, "zero participantes"):
+            sync.write_raw_tab(FakeSpreadsheet(), [], "raw_inscritos_santos")
+
+        # elo 2: sem a chave, write_metas_native nem pede a aba
+        pedidas = []
+
+        class _Espiao:
+            def worksheet(self, nome):
+                pedidas.append(nome)
+                raise gspread.exceptions.WorksheetNotFound(nome)
+
+        sync.write_metas_native(_Espiao(), {})
+        self.assertEqual(pedidas, [], "etapa nao sincronizada nao pode tocar a aba")
+
+        # controle: com a chave presente (loja aberta sem venda) a aba E processada,
+        # porque ai o zero e verdade. E o par que prova que a guarda discrimina.
+        sync.write_metas_native(_Espiao(), {87817: []})
+        self.assertEqual(pedidas, ["Metas Circuito Santos"])
 
     def test_empty_api_response_fails_before_worksheet_access(self):
         sh = FakeSpreadsheet()

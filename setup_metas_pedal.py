@@ -1,9 +1,11 @@
 """
-Build das abas de META das etapas de Pedal X no Dashboard_Inscricoes_VaiBem (Sheets API).
+Build das abas de META de eventos sem .xlsx de origem, no Dashboard_Inscricoes_VaiBem.
 
-Cria "Metas Pedal Road", "Metas Pedal Manaus" e "Metas Pedal Canastra" com o mesmo layout,
-formatacao, formatacao condicional e grafico das abas de meta das corridas (Metas SSA/BH/BSB),
-mas montadas a partir de config declarativa — nao ha .xlsx de origem para os pedais.
+Cria "Metas Pedal Road", "Metas Pedal Manaus", "Metas Pedal Canastra" e "Metas Circuito
+Santos" com o mesmo layout, formatacao, formatacao condicional e grafico das abas de meta
+das corridas (Metas SSA/BH/BSB), mas montadas a partir de config declarativa.
+
+Apesar do nome, o script nao e mais so de pedal: o Circuito Santos usa o mesmo builder.
 
 POR QUE UM SCRIPT NOVO (e nao estender setup_metas_native.py): aquele e um TRANSCRITOR do
 .xlsx da Tamyris e recria as 3 abas de corrida por delete+recreate. Nao tem fonte para pedal
@@ -11,11 +13,13 @@ e mexer nele arrisca producao. Aqui o layout e gerado; os helpers puros sao reap
 
 DIFERENCAS DELIBERADAS EM RELACAO AS CORRIDAS:
   - Coluna D (Acumulado) fica VISIVEL (nas corridas o build esconde). Pedido do Bruno.
-  - Bloco "Meta por tier" tem UMA linha de tier: os pedais tem preco unico (R$139 + R$10 de
-    taxa em todas as modalidades das 3 etapas). Essa linha vai SEM meta de proposito — quem
-    carrega os 500 e a linha "Total Pago". Com meta nas duas, o bloco somaria 1000 e o painel
+  - Bloco "Meta por tier" tem UMA linha de tier: estes eventos tem preco unico (pedais R$139,
+    Santos R$70, sempre + R$10 de taxa). Essa linha vai SEM meta de proposito — quem carrega a
+    meta e a linha "Total Pago". Com meta nas duas, o bloco somaria o dobro e o painel
     repetiria o mesmo numero. Sem meta, ela vale como cross-check de que G continua igual a E.
-  - Bloco "Metas Gratuitas" entra com Meta em branco (hoje nao ha inscricao gratuita nos pedais).
+  - Bloco "Metas Gratuitas": Meta em branco nos pedais (nao ha inscricao gratuita neles).
+    Em Santos a meta e 1000, com duas linhas de RATEIO abaixo (600 garantidos pelo
+    patrocinador Asia Shipping + 400 a conquistar). Ver `rateio_gratuitas` na CONFIGS.
 
 SEGURANCA: guard dinamico. Le as abas existentes e aborta se qualquer request mirar um
 sheetId que nao seja uma das abas-alvo recem-criadas — aba nova criada depois ja nasce
@@ -24,10 +28,11 @@ Aba existente NAO e sobrescrita sem --force: a coluna C (Meta) e editavel pela T
 pelo Gui, e recriar por engano apagaria o ajuste.
 
 REGUA SEMANAL: de (1a venda -> ultimo dia de venda), 7 dias por semana, ultima podendo ser curta.
-`GET /Event/{id}` nao expoe a janela de vendas (nao ha dataInicioVendas/dataFimVendas), MAS a
-pagina publica da loja renderiza "Inscrições até DD/MM/AAAA" — o campo existe, so nao vem pela
-API. O prazo real fica em `fim` na CONFIGS abaixo; nao derivar da data do evento (medido em
-28/07: as 3 lojas fecham ~6 dias antes, nao na vespera).
+`GET /Event/{id}` nao expoe a janela de vendas (nao ha dataInicioVendas/dataFimVendas), mas o
+prazo E publico: o endpoint do site `www.ticketsports.com.br/api/events/list?term=<nome>`
+devolve `signUpDeadLine` em JSON limpo (achado 29/07 — antes disso so se lia renderizando a
+SPA). O prazo real fica em `fim` na CONFIGS abaixo; nao derivar da data do evento (medido em
+28/07: as 3 lojas de pedal fecham ~6 dias antes, nao na vespera).
 
 LOCALE (provado por probe 22/06): a planilha parseia formula em pt_BR -> separador de
 argumento e ';' (virgula da #ERROR). Vale para SUMIF/IF/OR/AND. Formulas sem separador
@@ -37,6 +42,13 @@ Uso:  python setup_metas_pedal.py --all --dry-run
       python setup_metas_pedal.py --event pedalx_road
       python setup_metas_pedal.py --event pedalx_road --force   # recria aba existente
 """
+# NOTA SOBRE O CIRCUITO SANTOS (87817), valida enquanto o acesso nao chegar:
+# o evento e do CNPJ da EGP BRASIL, nao da Brada, e `GET /Order/List` e escopado por
+# organizador — devolve 204 vazio. Logo o cron NAO preenche essa aba (a guarda de
+# write_metas_native pula etapa ausente de participants_por_cidade), e a coluna E fica
+# vazia. Consequencia visivel: o grafico nasce com UMA serie so (o Sheets omite serie de
+# fonte inteiramente vazia — DOCUMENTACAO_TECNICA §16.5). Diferente dos pedais, isso NAO
+# se auto-cura no primeiro run: so volta a duas series quando o acesso for concedido.
 import argparse
 import os
 from datetime import date, timedelta
@@ -51,7 +63,9 @@ from setup_metas_native import chart_request, col_idx, hexcol
 SA_FILE = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE") or r"C:\Users\bruno\.brada-secrets\sheets-sa.json"
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID") or "1KfTWNTDoWUok-yn_gGlZaJk_lhPmq9RXOh793mZomFA"
 
-META_TOTAL = 500          # pagas por etapa (definido pela Tamyris na call de 28/07)
+META_TOTAL = 500          # pagas por etapa de pedal (Tamyris, call de 28/07). Sobrescrevivel
+                          # por evento com `meta_total` na CONFIGS (Santos usa 1000).
+LABEL_TIER = "Inscrição R$139 (tier único)"   # default dos pedais; ver `label_tier`
 N_COLS = 20               # A..T (o painel lateral vai ate T)
 
 LARANJA = hexcol("C55A11")
@@ -80,6 +94,8 @@ HEADERS = ["Semana", "Período", "Meta", "Acumulado", "Realizado", "Gap",
 #             mas a pagina renderizada traz — e as tres fecham ~6 dias antes do evento, nao na
 #             vespera. Se o prazo mudar no painel, atualizar aqui.
 # `evento`  = so referencia; nao entra no calculo da regua.
+# Opcionais: `meta_total` (default META_TOTAL), `label_tier` (default LABEL_TIER),
+#            `meta_gratuitas` (default vazio) e `rateio_gratuitas` (default nenhum).
 CONFIGS = {
     "pedalx_road": {
         "event_id": 87735, "tab": "Metas Pedal Road", "sigla": "Pedal Road",
@@ -92,6 +108,23 @@ CONFIGS = {
     "pedalx_canastra": {
         "event_id": 87727, "tab": "Metas Pedal Canastra", "sigla": "Pedal Canastra",
         "inicio": date(2026, 7, 24), "fim": date(2026, 10, 12), "evento": date(2026, 10, 17),
+    },
+    # Circuito Santos: `inicio` e HIPOTESE, nao dado. A 1a venda real nao pode ser apurada
+    # porque Order/List esta bloqueado (ver nota no topo), e a loja ja tinha 5 confirmados
+    # em 29/07 — ou seja, a venda comecou ANTES. Quando o acesso chegar, conferir a 1a venda
+    # e corrigir EDITANDO as linhas de semana; nao recriar com --force, que apagaria ajuste
+    # manual da coluna C. `fim` = signUpDeadLine lido no JSON publico em 29/07.
+    "circuito_santos": {
+        "event_id": 87817, "tab": "Metas Circuito Santos", "sigla": "Circuito Santos",
+        "inicio": date(2026, 7, 29), "fim": date(2026, 9, 14), "evento": date(2026, 9, 20),
+        "meta_total": 1000,
+        "label_tier": "Inscrição R$70 (tier único)",
+        "meta_gratuitas": 1000,
+        # Rateio de PLANEJAMENTO. A plataforma nao distingue cortesia do patrocinador de
+        # cortesia que a Brada foi buscar: ambas caem em "KIT ATLETA - CORTESIAS". Por isso
+        # essas linhas carregam so a meta; o Realizado fica na linha do total, que e a unica
+        # que o cron escreve (_find_gratuitas_native usa hdr+1).
+        "rateio_gratuitas": [("Asia Shipping (garantido)", 600), ("A conquistar", 400)],
     },
 }
 
@@ -180,7 +213,9 @@ def _put(grid, row, col_letter, cd):
 def build_layout(cfg):
     """Monta (grid, marcos) da aba. `marcos` traz as linhas 1-based que o painel e a
     formatacao condicional precisam referenciar."""
-    linhas = semanas(cfg["inicio"], cfg["fim"])
+    meta_total = cfg.get("meta_total", META_TOTAL)
+    rateio = cfg.get("rateio_gratuitas") or []
+    linhas = semanas(cfg["inicio"], cfg["fim"], meta_total)
     n = len(linhas)
 
     r_wk0, r_wkN = 2, n + 1
@@ -190,7 +225,8 @@ def build_layout(cfg):
     r_grat_titulo = n + 7
     r_grat_hdr = n + 8
     r_grat = n + 9
-    last_row = r_grat
+    # As linhas de rateio ficam ABAIXO da do cron, que precisa continuar sendo hdr+1.
+    last_row = r_grat + len(rateio)
 
     grid = _blank_grid(last_row)
 
@@ -218,13 +254,13 @@ def build_layout(cfg):
     for letra, texto in (("A", "Meta por tier"), ("B", "Meta"), ("C", "Realizado"), ("E", "Gap")):
         _put(grid, r_tier_hdr, letra, cell(texto, bg=ZEBRA, bold=True, halign="CENTER"))
     # Linha de tier SEM meta: ver docstring do modulo.
-    _put(grid, r_tier, "A", cell("Inscrição R$139 (tier único)", halign="LEFT"))
+    _put(grid, r_tier, "A", cell(cfg.get("label_tier", LABEL_TIER), halign="LEFT"))
     _put(grid, r_tier, "B", cell(nf=NF_INT))
     _put(grid, r_tier, "C", cell(formula="=SUM(G:G)", nf=NF_INT))
     _put(grid, r_tier, "E", cell(formula=f'=IF($B{r_tier}="";"";$B{r_tier}-$C{r_tier})', nf=NF_INT))
 
     _put(grid, r_total, "A", cell("Total Pago", halign="LEFT"))
-    _put(grid, r_total, "B", cell(META_TOTAL, nf=NF_INT))
+    _put(grid, r_total, "B", cell(meta_total, nf=NF_INT))
     _put(grid, r_total, "C", cell(formula='=SUMIF($A:$A;"Semana*";$E:$E)', nf=NF_INT))
     _put(grid, r_total, "E", cell(formula=f'=IF($B{r_total}="";"";$B{r_total}-$C{r_total})', nf=NF_INT))
 
@@ -236,10 +272,19 @@ def build_layout(cfg):
         _put(grid, r_grat_hdr, letra, cell(texto, bg=LARANJA, bold=True, fg=WHITE,
                                            halign="CENTER", valign="MIDDLE"))
     _put(grid, r_grat, "A", cell(serial(cfg["inicio"]), nf=NF_DATE))
-    _put(grid, r_grat, "B", cell(nf=NF_INT))
+    _put(grid, r_grat, "B", cell(cfg.get("meta_gratuitas"), nf=NF_INT))
     _put(grid, r_grat, "C", cell(nf=NF_INT))
     _put(grid, r_grat, "D", cell(nf=NF_INT))
-    _put(grid, r_grat, "E", cell("Monitorar cortesias"))
+    _put(grid, r_grat, "E", cell("Total de cortesias" if rateio else "Monitorar cortesias"))
+
+    # Rateio: so META. O Realizado nao se divide porque a plataforma nao marca a origem da
+    # cortesia — o numero real vive na linha acima, que e a que o cron escreve.
+    for k, (rotulo, meta) in enumerate(rateio):
+        r = r_grat + 1 + k
+        z = ZEBRA if r % 2 == 0 else None
+        _put(grid, r, "A", cell(rotulo, bg=z, halign="LEFT"))
+        _put(grid, r, "B", cell(meta, bg=z, nf=NF_INT, halign="CENTER"))
+        _put(grid, r, "E", cell("Não separável na plataforma", bg=z))
 
     # --- painel lateral (N:T), linhas FIXAS como nas corridas
     _put(grid, 2, "N", cell(f'Painel {cfg["sigla"]}', bg=LARANJA, bold=True, fg=WHITE,
@@ -268,7 +313,7 @@ def build_layout(cfg):
                                 nf=NF_PCT, halign="CENTER"))
 
     marcos = {"n": n, "wk0": r_wk0, "wkN": r_wkN, "tier_hdr": r_tier_hdr, "tier": r_tier,
-              "total": r_total, "grat": r_grat, "last": last_row}
+              "total": r_total, "grat": r_grat, "rateio": len(rateio), "last": last_row}
     return grid, marcos
 
 
@@ -323,8 +368,9 @@ def build_requests(sheet_id, cfg):
 
     # grafico nativo (duravel; nao morre com edicao humana). `wkN` = ultima linha de semana:
     # o helper usa como fim exclusivo do dominio e ancora o grafico em wkN+10, que cai duas
-    # linhas abaixo do fim do conteudo (o bloco sob as semanas tem 8 linhas).
-    req.append(chart_request(sheet_id, cfg["sigla"], m["wkN"]))
+    # linhas abaixo do fim do conteudo (o bloco sob as semanas tem 8 linhas). `extra` desloca
+    # a ancora quando o rateio de gratuitas alonga esse bloco, preservando a folga.
+    req.append(chart_request(sheet_id, cfg["sigla"], m["wkN"], extra=m["rateio"]))
     return req, m
 
 
@@ -381,12 +427,18 @@ def main(keys, dry=False, force=False):
         for key in keys:
             cfg = CONFIGS[key]
             _grid, m = build_layout(cfg)
-            linhas = semanas(cfg["inicio"], cfg["fim"])
+            # Reusar a MESMA meta que o layout usou. Recalcular sem `meta_total` fazia o
+            # dry-run reportar 500 e metas de 72 numa aba que nasce com 1000 e 143 —
+            # relatorio mentiroso e justamente o que um dry-run existe para evitar.
+            linhas = semanas(cfg["inicio"], cfg["fim"], cfg.get("meta_total", META_TOTAL))
             req, _ = build_requests(-1, cfg)
             print(f'[DRY] {cfg["tab"]}: {m["n"]} semanas, {len(req)} requests, '
                   f'ultima linha {m["last"]}, soma das metas {sum(x[2] for x in linhas)}')
             for rotulo, periodo, meta in linhas:
                 print(f"        {rotulo:<10} {periodo:<15} meta={meta}")
+            if m["rateio"]:
+                print(f'        rateio de gratuitas: {cfg["rateio_gratuitas"]} '
+                      f'(meta total {cfg.get("meta_gratuitas")})')
         print("[DRY] nada enviado.")
         return
 
