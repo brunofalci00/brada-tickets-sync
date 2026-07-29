@@ -98,6 +98,38 @@ class SyncPedalXTests(unittest.TestCase):
         self.assertNotIn(santos["raw_tab"], {e["raw_tab"] for e in outros})
         self.assertNotIn(santos["dash_tab"], {e["dash_tab"] for e in outros})
 
+    def test_santos_uses_its_own_credential_and_never_falls_back(self):
+        """Evento de outro organizador tem credencial propria, e a falta dela LEVANTA.
+
+        O fallback silencioso para a conta padrao seria o pior resultado possivel: a API
+        devolveria 204 vazio, indistinguivel de "loja sem venda", e um secret faltando
+        ficaria escondido por semanas.
+        """
+        santos = next(e for e in sync.EVENTS if e["key"] == "santos")
+        self.assertEqual(santos["login_env"], "TICKET_LOGIN_SANTOS")
+        self.assertEqual(santos["password_env"], "TICKET_PASSWORD_SANTOS")
+
+        # nenhuma outra etapa declara credencial propria
+        outros = [e for e in sync.EVENTS if e["key"] != "santos"]
+        self.assertEqual([e for e in outros if e.get("login_env")], [])
+
+        # secret ausente -> levanta, sem tocar na rede
+        with mock.patch.dict(os.environ, {"TICKET_LOGIN_SANTOS": "", "TICKET_PASSWORD_SANTOS": ""}):
+            with self.assertRaisesRegex(RuntimeError, "TICKET_LOGIN_SANTOS"):
+                sync.token_for_event(santos, {})
+
+        # secret presente -> autentica com a credencial DELE, nao com a padrao
+        vistos = []
+        with mock.patch.object(sync, "authenticate", lambda l=None, p=None: vistos.append((l, p)) or "tok"):
+            with mock.patch.dict(os.environ, {"TICKET_LOGIN_SANTOS": "u", "TICKET_PASSWORD_SANTOS": "s"}):
+                cache = {}
+                self.assertEqual(sync.token_for_event(santos, cache), "tok")
+                sync.token_for_event(santos, cache)          # 2a chamada reusa o cache
+            self.assertEqual(vistos, [("u", "s")], "autenticou mais de uma vez ou com a conta errada")
+            # etapa sem login_env continua na conta padrao
+            sync.token_for_event(outros[0], cache)
+            self.assertEqual(vistos[-1], (None, None))
+
     def test_blocked_event_leaves_metas_tab_untouched(self):
         """O caminho completo do bloqueio: 204 -> raw preservada -> aba de metas intocada.
 

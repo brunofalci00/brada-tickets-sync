@@ -224,11 +224,14 @@ for _k, _r in _reguas.items():
 chk("pedal_n_road", len(_reguas["pedalx_road"]), 5)
 chk("pedal_n_manaus", len(_reguas["pedalx_manaus"]), 7)
 chk("pedal_n_canastra", len(_reguas["pedalx_canastra"]), 12)
-# Santos: 29/07 -> 14/09 (signUpDeadLine), meta 1000 em 7 semanas
-chk("santos_n_semanas", len(_reguas["circuito_santos"]), 7)
+# Santos: 1a venda REAL 23/07 -> 14/09 (signUpDeadLine), meta 1000 em 8 semanas de 125.
+# A versao de 29/07 usava 29/07 como hipotese e dava 7 semanas; o acesso mostrou que a loja
+# ja vendia havia seis dias.
+chk("santos_n_semanas", len(_reguas["circuito_santos"]), 8)
 chk("santos_meta_nao_herdou_500", _metas_cfg["circuito_santos"], 1000)
-chk("santos_primeira_semana", _reguas["circuito_santos"][0][1], "29/07 - 05/08")
-chk("santos_ultima_semana", _reguas["circuito_santos"][-1][1], "09/09 - 14/09")
+chk("santos_primeira_semana", _reguas["circuito_santos"][0][1], "23/07 - 30/07")
+chk("santos_ultima_semana", _reguas["circuito_santos"][-1][1], "10/09 - 14/09")
+chk("santos_semanas_exatas", {m for _, _, m in _reguas["circuito_santos"]}, {125})
 # os pedais NAO podem ter herdado a meta do Santos (regressao da parametrizacao)
 chk("pedais_seguem_em_500",
     {_metas_cfg[k] for k in ("pedalx_road", "pedalx_manaus", "pedalx_canastra")}, {500})

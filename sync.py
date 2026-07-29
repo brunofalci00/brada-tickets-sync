@@ -13,6 +13,7 @@ import json
 import os
 import ssl
 import time
+import urllib.parse
 from datetime import datetime, date, timezone, timedelta
 
 import gspread
@@ -96,20 +97,20 @@ EVENTS = [
         "non_blocking": True,
         "expected_categorias": {"CATEGORIA SPORT - 30 km ", "CATEGORIA PRÓ - 60 km"},
     },
-    # Circuito Santos. ATENCAO: evento de OUTRO organizador (EGP BRASIL, 22.087.202/0001-55),
-    # nao da Brada. `GET /Order/List` e escopado por CNPJ do login e devolve 204 vazio aqui —
-    # medido em 29/07 contra controle: os 6 eventos Brada respondem 200, quatro eventos de
-    # terceiros respondem 204. Enquanto o acesso nao for concedido a marketing@brada.social:
-    #   fetch_all_orders -> [] -> write_raw_tab levanta -> non_blocking segura -> a chave nao
-    #   entra em participants_por_cidade -> write_metas_native pula a aba (nao zera).
-    # Ou seja, a etapa loga falha de hora em hora DE PROPOSITO, e a aba de metas fica em
-    # branco em vez de mostrar zero. Em branco = sem dado; zero seria mentira.
+    # Circuito Santos. UNICO evento de OUTRO organizador (EGP BRASIL, 22.087.202/0001-55).
+    # `Order/List` e escopado pelo CNPJ do login, entao a conta padrao devolve 204 vazio aqui
+    # — sem erro, indistinguivel de "loja sem venda". Por isso a etapa usa credencial propria
+    # (`login_env`/`password_env`), de um usuario que a EGP criou na conta deles em 29/07.
+    # Se esse secret sumir, `token_for_event` LEVANTA e o non_blocking segura: melhor a etapa
+    # falhar visivelmente do que voltar a 204 silencioso.
     {
         "key": "santos",
         "id": 87817,
         "label": "Circuito Santos",
         "raw_tab": "raw_inscritos_santos",
         "dash_tab": "Circuito Santos",
+        "login_env": "TICKET_LOGIN_SANTOS",
+        "password_env": "TICKET_PASSWORD_SANTOS",
         "ll_sequence_env": "LL_SEQUENCE_SANTOS",
         "ll_sent_tab": "Etapa Circuito Santos",
         "timestamp_cell": "F2",
@@ -265,10 +266,15 @@ def api_request(method, endpoint, headers=None, body=None):
     return _retry(_do, endpoint.split("?")[0])
 
 
-def authenticate():
-    """Autentica na API e retorna o Bearer token."""
+def authenticate(login=None, password=None):
+    """Autentica na API e retorna o Bearer token. Sem argumento usa a conta padrao."""
+    login = login or TICKET_LOGIN
+    password = password or TICKET_PASSWORD
+
     def _do():
-        body = f"Login={TICKET_LOGIN}&Password={TICKET_PASSWORD}&AccessType=O"
+        # quote_plus nos dois campos: senha forte com & = + quebraria o corpo do form.
+        body = (f"Login={urllib.parse.quote_plus(login)}"
+                f"&Password={urllib.parse.quote_plus(password)}&AccessType=O")
         ctx = ssl.create_default_context()
         conn = http.client.HTTPSConnection(API_BASE, context=ctx)
         conn.request(
@@ -290,6 +296,33 @@ def authenticate():
     token = _retry(_do, "auth")
     print("Autenticado com sucesso.")
     return token
+
+
+def token_for_event(event, cache):
+    """Token da conta que enxerga ESTE evento, reusando por credencial.
+
+    `Order/List` e escopado pelo CNPJ do organizador do login: um evento de outro produtor
+    devolve 204 vazio com a conta padrao, sem erro nenhum. Eventos assim declaram
+    `login_env`/`password_env` e usam credencial propria.
+
+    Se o evento declara credencial mas o secret nao existe, LEVANTA em vez de cair na conta
+    padrao — o fallback silencioso daria 204, que e indistinguivel de "loja sem venda" e
+    esconderia um secret faltando por semanas.
+    """
+    chave = event.get("login_env") or "_default"
+    if chave not in cache:
+        if chave == "_default":
+            cache[chave] = authenticate()
+        else:
+            login = os.environ.get(event["login_env"], "")
+            senha = os.environ.get(event.get("password_env", ""), "")
+            if not login or not senha:
+                raise RuntimeError(
+                    f"{event['label']} exige a credencial {event['login_env']}/"
+                    f"{event.get('password_env')} e ela nao esta no ambiente"
+                )
+            cache[chave] = authenticate(login, senha)
+    return cache[chave]
 
 
 def fetch_all_orders(token, event_id):
@@ -1210,13 +1243,13 @@ def main(argv=None):
     args = _parse_args(argv)
     print(f"=== Sync Ticketsports -> Sheets + Leadlovers ({datetime.now()}) ===")
 
-    token = authenticate()
+    tokens = {}
     gc = get_sheets_client()
     sh = _open_dashboard(gc, require_id=args.raw_only)
 
     if args.raw_only:
         event = next(event for event in EVENTS if event["key"] == args.event)
-        participants = sync_event(token, sh, event, send_leads=False)
+        participants = sync_event(token_for_event(event, tokens), sh, event, send_leads=False)
         print(f"\n=== Raw-only concluído: {len(participants)} inscritos em {event['raw_tab']} ===")
         return
 
@@ -1228,7 +1261,8 @@ def main(argv=None):
     successful_events = []
     for event in EVENTS:
         try:
-            participants = sync_event(token, sh, event, ll_sh=ll_sh, send_leads=True)
+            participants = sync_event(token_for_event(event, tokens), sh, event,
+                                      ll_sh=ll_sh, send_leads=True)
         except Exception as exc:
             if event.get("non_blocking"):
                 print(f"  [NON-BLOCKING] {event['label']} falhou; demais etapas seguem: {exc}")

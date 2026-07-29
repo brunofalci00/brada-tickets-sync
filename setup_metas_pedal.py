@@ -109,14 +109,13 @@ CONFIGS = {
         "event_id": 87727, "tab": "Metas Pedal Canastra", "sigla": "Pedal Canastra",
         "inicio": date(2026, 7, 24), "fim": date(2026, 10, 12), "evento": date(2026, 10, 17),
     },
-    # Circuito Santos: `inicio` e HIPOTESE, nao dado. A 1a venda real nao pode ser apurada
-    # porque Order/List esta bloqueado (ver nota no topo), e a loja ja tinha 5 confirmados
-    # em 29/07 — ou seja, a venda comecou ANTES. Quando o acesso chegar, conferir a 1a venda
-    # e corrigir EDITANDO as linhas de semana; nao recriar com --force, que apagaria ajuste
-    # manual da coluna C. `fim` = signUpDeadLine lido no JSON publico em 29/07.
+    # Circuito Santos. `inicio` = 1a venda REAL (23/07 21:38), apurada em Order/List assim que
+    # o acesso chegou, em 29/07. A primeira versao da aba usou 29/07 como hipotese e errou:
+    # a loja ja vendia havia seis dias. Regua refeita no mesmo dia, de 7 para 8 semanas.
+    # `fim` = signUpDeadLine lido no JSON publico do site.
     "circuito_santos": {
         "event_id": 87817, "tab": "Metas Circuito Santos", "sigla": "Circuito Santos",
-        "inicio": date(2026, 7, 29), "fim": date(2026, 9, 14), "evento": date(2026, 9, 20),
+        "inicio": date(2026, 7, 23), "fim": date(2026, 9, 14), "evento": date(2026, 9, 20),
         "meta_total": 1000,
         "label_tier": "Inscrição R$70 (tier único)",
         "meta_gratuitas": 1000,
